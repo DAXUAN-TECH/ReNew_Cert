@@ -594,10 +594,12 @@ crontab -e
 
 - **v1.3**：修复和优化
   - 修复 `set -u` 模式下空数组访问错误（`TEMP_FILES[@]` 和 `DNS_PROVIDERS_USED[@]`）
+  - 修复 `local` 关键字在函数外部使用的错误（CentOS 7.9 兼容性）
   - 改进数组访问安全性，兼容严格模式（`set -u`）
   - 优化备份文件存储位置：备份文件保存在 `${NGINX_CONF_DIR}/backup/` 目录下
   - 备份文件格式：`配置文件名.backup.YYYYMMDD_HHMMSS`
   - 备份目录自动创建（如果不存在）
+  - 提升跨平台兼容性（CentOS、Ubuntu、Debian 等）
 
 ## 许可证
 

@@ -1519,7 +1519,7 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
             fi
             # 记录使用的DNS提供商（去重）
             # 检查数组是否为空（兼容 set -u 模式）
-            local provider_exists=0
+            provider_exists=0
             if [ ${#DNS_PROVIDERS_USED[@]} -gt 0 ]; then
                 for existing_provider in "${DNS_PROVIDERS_USED[@]}"; do
                     if [ "$existing_provider" = "$dns_provider" ]; then
