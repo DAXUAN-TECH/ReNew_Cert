@@ -863,8 +863,8 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     
     log_and_echo "正在执行证书申请命令..."
     # 使用临时文件保存输出，以便检查错误信息和退出码
-    local issue_output=$(mktemp)
-    local issue_status=0
+    issue_output=$(mktemp)
+    issue_status=0
     
     if "$ACME_SH_PATH" --issue --dns "$DOMAIN_DNS_PROVIDER" \
         -d "$domain" \
@@ -878,7 +878,7 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     cat "$issue_output" | tee -a "$LOG_FILE"
     
     # 检查输出中是否包含错误信息
-    local has_error=0
+    has_error=0
     if grep -qiE "(error|failed|失败|错误)" "$issue_output" 2>/dev/null; then
         has_error=1
     fi
@@ -895,7 +895,7 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     # acme.sh的证书目录命名规则：
     # - 通配符证书 *.example.com -> *.example.com_ecc
     # - 单域名证书 example.com -> example.com_ecc
-    local cert_dir="$HOME/.acme.sh/${domain}_ecc"
+    cert_dir="$HOME/.acme.sh/${domain}_ecc"
     
     if [ ! -d "$cert_dir" ]; then
         log_and_echo "警告: 证书申请失败，证书目录不存在: $cert_dir，跳过安装步骤"
@@ -921,8 +921,8 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     
     log_and_echo "正在执行证书安装命令..."
     # 使用临时文件保存输出，以便检查错误信息和退出码
-    local install_output=$(mktemp)
-    local install_status=0
+    install_output=$(mktemp)
+    install_status=0
     
     if "$ACME_SH_PATH" --install-cert \
         -d "$domain" \
@@ -937,7 +937,7 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     cat "$install_output" | tee -a "$LOG_FILE"
     
     # 检查输出中是否包含错误信息
-    local has_install_error=0
+    has_install_error=0
     if grep -qiE "(error|failed|失败|错误|没有那个文件)" "$install_output" 2>/dev/null; then
         has_install_error=1
     fi
