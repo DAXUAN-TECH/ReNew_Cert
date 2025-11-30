@@ -1,7 +1,7 @@
 # ========== 基础配置 ==========
 # Nginx配置文件目录路径（绝对路径或相对于脚本目录的路径）
 # 如果使用相对路径，将相对于脚本所在目录
-NGINX_CONF_DIR=/data/openresty/nginx/conf/vhost/
+NGINX_CONF_DIR=/data/conf.d/
 
 # DNS API凭证配置文件路径（相对于脚本目录）
 # 脚本会自动读取此文件并加载DNS API凭证环境变量

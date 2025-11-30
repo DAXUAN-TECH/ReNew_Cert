@@ -289,8 +289,12 @@ find_nginx_conf_files() {
     local main_domain=$(extract_main_domain "$domain")
     local conf_files=()
     
-    # 如果nginx配置目录未配置，返回空
-    if [ -z "$NGINX_CONF_DIR" ] || [ ! -d "$NGINX_CONF_DIR" ]; then
+    # 如果nginx配置目录未配置或不存在，返回空
+    if [ -z "$NGINX_CONF_DIR" ]; then
+        return 1
+    fi
+    
+    if [ ! -d "$NGINX_CONF_DIR" ]; then
         return 1
     fi
     
@@ -451,6 +455,24 @@ update_domain_nginx_configs() {
             log_and_echo "提示: 未配置NGINX_CONF_DIR，请在config文件中配置"
         else
             log_and_echo "提示: 在目录 $NGINX_CONF_DIR 中未找到匹配的配置文件"
+            log_and_echo "查找规则:"
+            if [ $is_wildcard -eq 1 ]; then
+                log_and_echo "  通配符域名 $domain -> 主域名 $main_domain"
+                log_and_echo "  匹配规则: 文件名以 .$main_domain 结尾或等于 $main_domain"
+            else
+                log_and_echo "  单域名 $domain"
+                log_and_echo "  匹配规则: 文件名等于 $domain 或以 .$main_domain 结尾"
+            fi
+            # 列出目录中的所有.conf文件，帮助用户调试
+            local all_confs=$(find "$NGINX_CONF_DIR" -type f -name "*.conf" 2>/dev/null | head -10)
+            if [ -n "$all_confs" ]; then
+                log_and_echo "目录中的配置文件示例（前10个）:"
+                while IFS= read -r conf; do
+                    if [ -n "$conf" ]; then
+                        log_and_echo "  - $(basename "$conf")"
+                    fi
+                done <<< "$all_confs"
+            fi
         fi
         return 1
     fi
@@ -570,8 +592,16 @@ ask_update_nginx_config() {
     local main_domain="$2"
     
     # 检查是否配置了nginx目录
-    if [ -z "$NGINX_CONF_DIR" ] || [ ! -d "$NGINX_CONF_DIR" ]; then
-        log_and_echo "提示: 未配置或Nginx配置目录不存在，跳过配置更新"
+    if [ -z "$NGINX_CONF_DIR" ]; then
+        log_and_echo "提示: Nginx配置目录未配置，跳过配置更新"
+        log_and_echo "请在config文件中配置 NGINX_CONF_DIR，例如：NGINX_CONF_DIR=/data/conf.d/"
+        return 1
+    fi
+    
+    if [ ! -d "$NGINX_CONF_DIR" ]; then
+        log_and_echo "提示: Nginx配置目录不存在，跳过配置更新"
+        log_and_echo "配置的路径: $NGINX_CONF_DIR"
+        log_and_echo "请检查路径是否正确，或修改config文件中的 NGINX_CONF_DIR 配置"
         return 1
     fi
     
@@ -640,7 +670,30 @@ log_and_echo "注意: 每个域名必须明确指定DNS提供商（格式: 域�
 if [ -n "$NGINX_CONF_DIR" ] && [ -d "$NGINX_CONF_DIR" ]; then
     log_and_echo "Nginx配置目录: $NGINX_CONF_DIR"
 else
-    log_and_echo "提示: Nginx配置目录未配置或不存在"
+    if [ -z "$NGINX_CONF_DIR" ]; then
+        log_and_echo "提示: Nginx配置目录未配置"
+        log_and_echo "请在config文件中配置 NGINX_CONF_DIR，例如：NGINX_CONF_DIR=/data/conf.d/"
+    else
+        log_and_echo "提示: Nginx配置目录不存在"
+        log_and_echo "配置的路径: $NGINX_CONF_DIR"
+        log_and_echo "请检查路径是否正确，或修改config文件中的 NGINX_CONF_DIR 配置"
+        # 尝试检测常见的nginx配置目录
+        local common_dirs=(
+            "/data/conf.d"
+            "/data/openresty/nginx/conf/vhost"
+            "/etc/nginx/conf.d"
+            "/usr/local/nginx/conf/vhost"
+            "/usr/local/openresty/nginx/conf/vhost"
+        )
+        log_and_echo "常见的Nginx配置目录："
+        for dir in "${common_dirs[@]}"; do
+            if [ -d "$dir" ]; then
+                log_and_echo "  ✓ $dir (存在)"
+            else
+                log_and_echo "  ✗ $dir (不存在)"
+            fi
+        done
+    fi
 fi
 
 # 1. 升级 acme.sh
@@ -809,30 +862,111 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     fi
     
     log_and_echo "正在执行证书申请命令..."
+    # 使用临时文件保存输出，以便检查错误信息和退出码
+    local issue_output=$(mktemp)
+    local issue_status=0
+    
     if "$ACME_SH_PATH" --issue --dns "$DOMAIN_DNS_PROVIDER" \
         -d "$domain" \
-        --dnssleep "$DNS_SLEEP" 2>&1 | tee -a "$LOG_FILE"; then
-        log_and_echo "证书申请/续签成功: $domain ($CERT_TYPE)"
+        --dnssleep "$DNS_SLEEP" > "$issue_output" 2>&1; then
+        issue_status=0
     else
+        issue_status=$?
+    fi
+    
+    # 同时输出到控制台和日志
+    cat "$issue_output" | tee -a "$LOG_FILE"
+    
+    # 检查输出中是否包含错误信息
+    local has_error=0
+    if grep -qiE "(error|failed|失败|错误)" "$issue_output" 2>/dev/null; then
+        has_error=1
+    fi
+    
+    # 检查退出码和错误信息
+    if [ $issue_status -ne 0 ] || [ $has_error -eq 1 ]; then
         log_and_echo "警告: 证书申请/续签失败: $domain，DNS提供商: $DOMAIN_DNS_PROVIDER，跳过安装步骤"
         log_and_echo "提示: 请检查DNS提供商是否正确，以及对应的API凭证是否已配置"
+        rm -f "$issue_output"
         continue
     fi
+    
+    # 验证证书是否真的存在（检查acme.sh的证书目录）
+    # acme.sh的证书目录命名规则：
+    # - 通配符证书 *.example.com -> *.example.com_ecc
+    # - 单域名证书 example.com -> example.com_ecc
+    local cert_dir="$HOME/.acme.sh/${domain}_ecc"
+    
+    if [ ! -d "$cert_dir" ]; then
+        log_and_echo "警告: 证书申请失败，证书目录不存在: $cert_dir，跳过安装步骤"
+        log_and_echo "提示: 请检查DNS验证是否成功，以及证书是否真的申请成功"
+        rm -f "$issue_output"
+        continue
+    fi
+    
+    # 检查证书文件是否存在
+    if [ ! -f "$cert_dir/fullchain.cer" ] || [ ! -f "$cert_dir/${domain}.key" ]; then
+        log_and_echo "警告: 证书申请失败，证书文件不存在: $cert_dir，跳过安装步骤"
+        log_and_echo "提示: 请检查DNS验证是否成功，以及证书是否真的申请成功"
+        rm -f "$issue_output"
+        continue
+    fi
+    
+    rm -f "$issue_output"
+    log_and_echo "证书申请/续签成功: $domain ($CERT_TYPE)"
     
     # 4.2 安装证书
     # 注意：不在安装时执行reload，将在所有操作完成后统一执行
     log_and_echo "开始安装证书: $domain"
     
     log_and_echo "正在执行证书安装命令..."
+    # 使用临时文件保存输出，以便检查错误信息和退出码
+    local install_output=$(mktemp)
+    local install_status=0
+    
     if "$ACME_SH_PATH" --install-cert \
         -d "$domain" \
         --key-file "${CERT_DIR}/${MAIN_DOMAIN}.key" \
-        --fullchain-file "${CERT_DIR}/${MAIN_DOMAIN}.pem" 2>&1 | tee -a "$LOG_FILE"; then
-        log_and_echo "证书安装成功: $domain"
-        SUCCESSFUL_DOMAINS+=("$domain|$MAIN_DOMAIN")
+        --fullchain-file "${CERT_DIR}/${MAIN_DOMAIN}.pem" > "$install_output" 2>&1; then
+        install_status=0
     else
-        log_and_echo "错误: 证书安装失败: $domain"
+        install_status=$?
     fi
+    
+    # 同时输出到控制台和日志
+    cat "$install_output" | tee -a "$LOG_FILE"
+    
+    # 检查输出中是否包含错误信息
+    local has_install_error=0
+    if grep -qiE "(error|failed|失败|错误|没有那个文件)" "$install_output" 2>/dev/null; then
+        has_install_error=1
+    fi
+    
+    # 检查退出码和错误信息
+    if [ $install_status -ne 0 ] || [ $has_install_error -eq 1 ]; then
+        log_and_echo "错误: 证书安装失败: $domain"
+        rm -f "$install_output"
+        continue
+    fi
+    
+    # 验证安装后的证书文件是否存在且不为空
+    if [ ! -f "${CERT_DIR}/${MAIN_DOMAIN}.key" ] || [ ! -s "${CERT_DIR}/${MAIN_DOMAIN}.key" ]; then
+        log_and_echo "错误: 证书私钥文件不存在或为空: ${CERT_DIR}/${MAIN_DOMAIN}.key"
+        rm -f "$install_output"
+        continue
+    fi
+    
+    if [ ! -f "${CERT_DIR}/${MAIN_DOMAIN}.pem" ] || [ ! -s "${CERT_DIR}/${MAIN_DOMAIN}.pem" ]; then
+        log_and_echo "错误: 证书文件不存在或为空: ${CERT_DIR}/${MAIN_DOMAIN}.pem"
+        rm -f "$install_output"
+        continue
+    fi
+    
+    rm -f "$install_output"
+    log_and_echo "证书安装成功: $domain"
+    log_and_echo "证书文件: ${CERT_DIR}/${MAIN_DOMAIN}.pem"
+    log_and_echo "私钥文件: ${CERT_DIR}/${MAIN_DOMAIN}.key"
+    SUCCESSFUL_DOMAINS+=("$domain|$MAIN_DOMAIN")
     
 done < "$CONFIG_FILE"
 
