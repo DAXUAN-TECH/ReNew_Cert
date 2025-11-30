@@ -11,6 +11,34 @@ set -u
 # 定义脚本所在目录（兼容各种调用方式）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# 解析命令行参数
+SCRIPT_MODE="normal"  # 默认模式：正常执行证书申请和配置更新
+if [ $# -gt 0 ]; then
+    case "$1" in
+        resetconf)
+            SCRIPT_MODE="resetconf"
+            ;;
+        -h|--help|help)
+            echo "用法: $0 [resetconf]"
+            echo ""
+            echo "参数说明:"
+            echo "  无参数        - 正常执行：申请/续签证书并更新Nginx配置"
+            echo "  resetconf     - 仅更新模式：只更新Nginx/OpenResty配置文件中的SSL证书路径"
+            echo "  -h, --help    - 显示此帮助信息"
+            echo ""
+            echo "示例:"
+            echo "  $0              # 正常执行证书申请和配置更新"
+            echo "  $0 resetconf    # 仅更新Nginx配置文件中的SSL证书路径"
+            exit 0
+            ;;
+        *)
+            echo "错误: 未知参数: $1"
+            echo "使用 '$0 --help' 查看帮助信息"
+            exit 1
+            ;;
+    esac
+fi
+
 # 临时文件列表（用于清理）
 TEMP_FILES=()
 
@@ -370,34 +398,37 @@ for dir in "$LOG_DIR" "$CERT_DIR"; do
     fi
 done
 
-# 检查并安装acme.sh
-ACME_SH_PATH=""
-if ! ACME_SH_PATH=$(check_acme_installed); then
-    log_and_echo "检测到系统未安装 acme.sh"
-    if ask_install_acme; then
-        if install_acme; then
-            # 安装后重新检查路径
-            if ! ACME_SH_PATH=$(check_acme_installed); then
-                log_and_echo "错误: acme.sh 安装后仍无法找到，请手动检查"
-                echo "错误: acme.sh 安装后仍无法找到，请手动检查" >&2
+# 如果是resetconf模式，跳过acme.sh检查（不需要acme.sh）
+if [ "$SCRIPT_MODE" != "resetconf" ]; then
+    # 检查并安装acme.sh
+    ACME_SH_PATH=""
+    if ! ACME_SH_PATH=$(check_acme_installed); then
+        log_and_echo "检测到系统未安装 acme.sh"
+        if ask_install_acme; then
+            if install_acme; then
+                # 安装后重新检查路径
+                if ! ACME_SH_PATH=$(check_acme_installed); then
+                    log_and_echo "错误: acme.sh 安装后仍无法找到，请手动检查"
+                    echo "错误: acme.sh 安装后仍无法找到，请手动检查" >&2
+                    exit 1
+                fi
+            else
+                log_and_echo "错误: acme.sh 安装失败，脚本退出"
                 exit 1
             fi
         else
-            log_and_echo "错误: acme.sh 安装失败，脚本退出"
             exit 1
         fi
     else
+        log_and_echo "检测到 acme.sh 已安装: $ACME_SH_PATH"
+    fi
+    
+    # 验证acme.sh可执行性
+    if [ ! -x "$ACME_SH_PATH" ]; then
+        log_and_echo "错误: acme.sh 文件不可执行: $ACME_SH_PATH"
+        echo "错误: acme.sh 文件不可执行: $ACME_SH_PATH" >&2
         exit 1
     fi
-else
-    log_and_echo "检测到 acme.sh 已安装: $ACME_SH_PATH"
-fi
-
-# 验证acme.sh可执行性
-if [ ! -x "$ACME_SH_PATH" ]; then
-    log_and_echo "错误: acme.sh 文件不可执行: $ACME_SH_PATH"
-    echo "错误: acme.sh 文件不可执行: $ACME_SH_PATH" >&2
-    exit 1
 fi
 
 # 检查配置文件是否存在
@@ -1209,13 +1240,188 @@ ask_update_nginx_config() {
     fi
 }
 
+# 函数：resetconf模式 - 仅更新Nginx配置文件中的SSL证书路径
+resetconf_mode() {
+    # 需要先加载配置（NGINX_CONF_DIR, CERT_DIR等）
+    # 定义默认值
+    local nginx_conf_dir=""
+    local cert_dir="${SCRIPT_DIR}/cert"
+    
+    # 检查配置文件是否存在
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "错误: 配置文件 $CONFIG_FILE 不存在" >&2
+        exit 1
+    fi
+    
+    # 从配置文件中读取NGINX_CONF_DIR
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -z "$line" ] || [[ "$line" =~ ^# ]]; then
+            continue
+        fi
+        if [[ "$line" =~ ^NGINX_CONF_DIR= ]]; then
+            nginx_conf_dir=$(echo "$line" | sed 's/^NGINX_CONF_DIR=//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [[ ! "$nginx_conf_dir" =~ ^/ ]]; then
+                nginx_conf_dir="${SCRIPT_DIR}/${nginx_conf_dir}"
+            fi
+            nginx_conf_dir="${nginx_conf_dir%/}"
+            break
+        fi
+    done < "$CONFIG_FILE"
+    
+    # 设置全局变量（供其他函数使用）
+    NGINX_CONF_DIR="$nginx_conf_dir"
+    CERT_DIR="$cert_dir"
+    
+    log_and_echo "============================================================="
+    log_and_echo "Nginx配置更新模式"
+    log_and_echo "任务开始时间: $(date)"
+    log_and_echo "脚本目录: $SCRIPT_DIR"
+    log_and_echo "日志文件: $LOG_FILE"
+    log_and_echo "证书目录: $CERT_DIR"
+    log_and_echo "配置文件: $CONFIG_FILE"
+    
+    # 检查Nginx配置目录
+    if [ -z "$NGINX_CONF_DIR" ]; then
+        log_and_echo "错误: Nginx配置目录未配置"
+        log_and_echo "请在config文件中配置 NGINX_CONF_DIR，例如：NGINX_CONF_DIR=/data/conf.d/"
+        exit 1
+    fi
+    
+    if [ ! -d "$NGINX_CONF_DIR" ]; then
+        log_and_echo "错误: Nginx配置目录不存在: $NGINX_CONF_DIR"
+        log_and_echo "请检查路径是否正确，或修改config文件中的 NGINX_CONF_DIR 配置"
+        exit 1
+    fi
+    
+    log_and_echo "Nginx配置目录: $NGINX_CONF_DIR"
+    log_and_echo "-------------------------------------------------------------"
+    
+    # 从配置文件中读取域名列表
+    local domains_to_update=()
+    while IFS= read -r domain_line || [ -n "$domain_line" ]; do
+        domain_line=$(echo "$domain_line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        # 跳过空行、注释行和配置行
+        if [ -z "$domain_line" ] || [[ "$domain_line" =~ ^# ]] || \
+           [[ "$domain_line" =~ ^NGINX_CONF_DIR= ]] || \
+           [[ "$domain_line" =~ ^DNS_PROVIDER= ]] || \
+           [[ "$domain_line" =~ ^CA_PROVIDER= ]] || \
+           [[ "$domain_line" =~ ^DNS_CREDENTIALS_FILE= ]] || \
+           [[ "$domain_line" =~ ^DNS_SLEEP= ]]; then
+            continue
+        fi
+        
+        # 解析域名（格式：域名|DNS提供商 或 域名|DNS提供商|账号标识）
+        local domain=""
+        if [[ "$domain_line" =~ \| ]]; then
+            domain=$(echo "$domain_line" | cut -d'|' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        else
+            # 如果没有DNS提供商，也尝试使用（兼容旧配置）
+            domain="$domain_line"
+        fi
+        
+        # 验证域名不为空
+        if [ -z "$domain" ]; then
+            continue
+        fi
+        
+        # 验证域名格式
+        if ! validate_domain_format "$domain"; then
+            log_and_echo "警告: 域名格式不正确，跳过: $domain"
+            continue
+        fi
+        
+        # 提取主域名
+        local main_domain=$(extract_main_domain "$domain")
+        
+        # 检查证书文件是否存在
+        local cert_file="${CERT_DIR}/${main_domain}.pem"
+        local key_file="${CERT_DIR}/${main_domain}.key"
+        
+        if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
+            log_and_echo "警告: 证书文件不存在，跳过域名 $domain"
+            log_and_echo "  证书文件: $cert_file"
+            log_and_echo "  私钥文件: $key_file"
+            continue
+        fi
+        
+        # 添加到更新列表
+        domains_to_update+=("$domain|$main_domain")
+    done < "$CONFIG_FILE"
+    
+    if [ ${#domains_to_update[@]} -eq 0 ]; then
+        log_and_echo "错误: 未找到有效的域名配置或证书文件"
+        log_and_echo "请检查config文件中的域名配置和证书目录中的证书文件"
+        exit 1
+    fi
+    
+    log_and_echo "共找到 ${#domains_to_update[@]} 个域名需要更新配置"
+    log_and_echo "-------------------------------------------------------------"
+    
+    # 更新每个域名的配置
+    local updated_count=0
+    for domain_info in "${domains_to_update[@]}"; do
+        IFS='|' read -r domain main_domain <<< "$domain_info"
+        log_and_echo ""
+        log_and_echo "处理域名: $domain"
+        log_and_echo "主域名: $main_domain"
+        
+        if update_domain_nginx_configs "$domain" "$main_domain"; then
+            updated_count=$((updated_count + 1))
+        fi
+    done
+    
+    log_and_echo ""
+    log_and_echo "-------------------------------------------------------------"
+    log_and_echo "配置更新完成: 共处理 ${#domains_to_update[@]} 个域名，成功更新 $updated_count 个"
+    
+    # 执行web服务器reload
+    if [ $updated_count -gt 0 ]; then
+        log_and_echo ""
+        log_and_echo "-------------------------------------------------------------"
+        log_and_echo "开始检测web服务器类型并执行reload..."
+        
+        # 检测web服务器类型
+        WEB_SERVER_TYPE=$(detect_web_server)
+        if [ "$WEB_SERVER_TYPE" != "unknown" ]; then
+            log_and_echo "检测到web服务器: $WEB_SERVER_TYPE"
+            
+            # 执行reload
+            if reload_web_server "$WEB_SERVER_TYPE"; then
+                log_and_echo "$WEB_SERVER_TYPE reload 执行成功"
+            else
+                log_and_echo "警告: $WEB_SERVER_TYPE reload 执行失败，请手动检查"
+            fi
+        else
+            log_and_echo "警告: 无法检测到web服务器（nginx或openresty），跳过reload"
+            log_and_echo "提示: 请确保已安装nginx或openresty，或手动执行reload"
+        fi
+    fi
+    
+    log_and_echo ""
+    log_and_echo "-------------------------------------------------------------"
+    log_and_echo "任务结束时间: $(date)"
+    log_and_echo "============================================================="
+}
+
+# 如果是resetconf模式，执行配置更新并退出
+# 注意：需要在变量初始化之后检查，所以放在这里
+if [ "$SCRIPT_MODE" = "resetconf" ]; then
+    # 执行resetconf模式（函数内部会读取配置）
+    resetconf_mode
+    exit 0
+fi
+
+# 正常模式：执行证书申请和配置更新流程
 log_and_echo "============================================================="
 log_and_echo "任务开始时间: $(date)"
 log_and_echo "脚本目录: $SCRIPT_DIR"
 log_and_echo "日志文件: $LOG_FILE"
 log_and_echo "证书目录: $CERT_DIR"
 log_and_echo "配置文件: $CONFIG_FILE"
-log_and_echo "acme.sh 路径: $ACME_SH_PATH"
+if [ -n "$ACME_SH_PATH" ]; then
+    log_and_echo "acme.sh 路径: $ACME_SH_PATH"
+fi
 log_and_echo "CA提供商: $CA_PROVIDER"
 log_and_echo "DNS凭证文件: $DNS_CREDENTIALS_FILE"
 log_and_echo "DNS等待时间: ${DNS_SLEEP}秒"
