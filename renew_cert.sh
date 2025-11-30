@@ -25,13 +25,12 @@ check_acme_installed() {
 
 # 函数：安装acme.sh
 install_acme() {
-    echo "开始安装 acme.sh..." >> "$LOG_FILE"
+    log_and_echo "开始安装 acme.sh..."
     echo "正在安装 acme.sh，请稍候..." >&2
     
-    # 使用官方安装脚本
-    if curl -s https://get.acme.sh | sh >> "$LOG_FILE" 2>&1; then
-        echo "acme.sh 安装成功" >> "$LOG_FILE"
-        echo "acme.sh 安装成功" >&2
+    # 使用官方安装脚本，同时输出到控制台和日志
+    if curl -s https://get.acme.sh | sh 2>&1 | tee -a "$LOG_FILE"; then
+        log_and_echo "acme.sh 安装成功"
         
         # 重新加载shell配置（如果存在）
         if [ -f "$HOME/.bashrc" ]; then
@@ -43,7 +42,7 @@ install_acme() {
         
         return 0
     else
-        echo "错误: acme.sh 安装失败" >> "$LOG_FILE"
+        log_and_echo "错误: acme.sh 安装失败"
         echo "错误: acme.sh 安装失败，请检查网络连接和权限" >&2
         return 1
     fi
@@ -57,21 +56,21 @@ ask_install_acme() {
         echo "acme.sh 是用于自动申请和续签SSL证书的工具" >&2
         echo "" >&2
         read -p "是否现在安装 acme.sh? (y/n): " answer
-        echo "用户选择: $answer" >> "$LOG_FILE"
+        log_and_echo "用户选择: $answer"
         
         case "$answer" in
             [Yy]|[Yy][Ee][Ss])
                 return 0
                 ;;
             *)
-                echo "用户选择不安装 acme.sh，脚本退出" >> "$LOG_FILE"
+                log_and_echo "用户选择不安装 acme.sh，脚本退出"
                 echo "用户选择不安装，脚本退出" >&2
                 return 1
                 ;;
         esac
     else
         # 非交互式环境，记录日志并退出
-        echo "错误: 系统未安装 acme.sh，且当前为非交互式环境，无法询问用户" >> "$LOG_FILE"
+        log_and_echo "错误: 系统未安装 acme.sh，且当前为非交互式环境，无法询问用户"
         echo "错误: 请先安装 acme.sh: curl https://get.acme.sh | sh" >&2
         return 1
     fi
@@ -119,7 +118,24 @@ LOG_DIR="${SCRIPT_DIR}/logs"
 LOG_FILE="${LOG_DIR}/renew_cert.log"
 
 # 定义证书存放目录（脚本同级目录下的 cert 文件夹）
-CERT_DIR="${SCRIPT_DIR}/cert" 
+CERT_DIR="${SCRIPT_DIR}/cert"
+
+# 函数：同时输出到控制台和日志文件
+log_and_echo() {
+    local message="$1"
+    # 输出到控制台
+    echo "$message"
+    # 同时追加到日志文件
+    echo "$message" >> "$LOG_FILE"
+}
+
+# 函数：执行命令并同时输出到控制台和日志文件
+run_with_log() {
+    local cmd="$1"
+    # 使用 tee 同时输出到控制台和日志文件
+    eval "$cmd" 2>&1 | tee -a "$LOG_FILE"
+    return ${PIPESTATUS[0]}
+} 
 
 # 创建必要的目录（logs 和 cert）
 for dir in "$LOG_DIR" "$CERT_DIR"; do
@@ -135,37 +151,37 @@ done
 # 检查并安装acme.sh
 ACME_SH_PATH=""
 if ! ACME_SH_PATH=$(check_acme_installed); then
-    echo "检测到系统未安装 acme.sh" >> "$LOG_FILE"
+    log_and_echo "检测到系统未安装 acme.sh"
     if ask_install_acme; then
         if install_acme; then
             # 安装后重新检查路径
             if ! ACME_SH_PATH=$(check_acme_installed); then
-                echo "错误: acme.sh 安装后仍无法找到，请手动检查" >> "$LOG_FILE"
+                log_and_echo "错误: acme.sh 安装后仍无法找到，请手动检查"
                 echo "错误: acme.sh 安装后仍无法找到，请手动检查" >&2
                 exit 1
             fi
         else
-            echo "错误: acme.sh 安装失败，脚本退出" >> "$LOG_FILE"
+            log_and_echo "错误: acme.sh 安装失败，脚本退出"
             exit 1
         fi
     else
         exit 1
     fi
 else
-    echo "检测到 acme.sh 已安装: $ACME_SH_PATH" >> "$LOG_FILE"
+    log_and_echo "检测到 acme.sh 已安装: $ACME_SH_PATH"
 fi
 
 # 验证acme.sh可执行性
 if [ ! -x "$ACME_SH_PATH" ]; then
-    echo "错误: acme.sh 文件不可执行: $ACME_SH_PATH" >> "$LOG_FILE"
+    log_and_echo "错误: acme.sh 文件不可执行: $ACME_SH_PATH"
     echo "错误: acme.sh 文件不可执行: $ACME_SH_PATH" >&2
     exit 1
 fi
 
 # 检查配置文件是否存在
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo "错误: 配置文件 $CONFIG_FILE 不存在" >> "$LOG_FILE"
-    echo "请创建配置文件，每行一个域名（支持通配符，如 *.example.com）" >> "$LOG_FILE"
+    log_and_echo "错误: 配置文件 $CONFIG_FILE 不存在"
+    log_and_echo "请创建配置文件，每行一个域名（支持通配符，如 *.example.com）"
     exit 1
 fi
 
@@ -216,7 +232,7 @@ while IFS= read -r line || [ -n "$line" ]; do
         DNS_SLEEP=$(echo "$line" | sed 's/^DNS_SLEEP=//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         # 验证DNS_SLEEP是否为有效数字
         if ! [[ "$DNS_SLEEP" =~ ^[0-9]+$ ]] || [ "$DNS_SLEEP" -lt 0 ]; then
-            echo "警告: DNS_SLEEP配置无效: $DNS_SLEEP，使用默认值: 300" >> "$LOG_FILE"
+            log_and_echo "警告: DNS_SLEEP配置无效: $DNS_SLEEP，使用默认值: 300"
             DNS_SLEEP=300
         fi
         continue
@@ -233,14 +249,14 @@ load_dns_credentials() {
     local cred_file="$1"
     
     if [ ! -f "$cred_file" ]; then
-        echo "警告: DNS凭证文件不存在: $cred_file" >> "$LOG_FILE"
-        echo "提示: 请复制 dns_credentials.example 为 $cred_file 并填写您的API密钥" >> "$LOG_FILE"
+        log_and_echo "警告: DNS凭证文件不存在: $cred_file"
+        log_and_echo "提示: 请复制 dns_credentials.example 为 $cred_file 并填写您的API密钥"
         return 1
     fi
     
     # 检查文件是否可读
     if [ ! -r "$cred_file" ]; then
-        echo "错误: DNS凭证文件不可读: $cred_file" >> "$LOG_FILE"
+        log_and_echo "错误: DNS凭证文件不可读: $cred_file"
         return 1
     fi
     
@@ -257,12 +273,12 @@ load_dns_credentials() {
         if [[ "$line" =~ ^export[[:space:]]+ ]]; then
             # 安全地执行export语句
             eval "$line" 2>/dev/null || {
-                echo "警告: 无法加载环境变量: $line" >> "$LOG_FILE"
+                log_and_echo "警告: 无法加载环境变量: $line"
             }
         fi
     done < "$cred_file"
     
-    echo "DNS凭证文件已加载: $cred_file" >> "$LOG_FILE"
+    log_and_echo "DNS凭证文件已加载: $cred_file"
     return 0
 }
 
@@ -359,27 +375,27 @@ update_nginx_ssl_cert() {
     # 检查文件是否包含SSL配置
     if ! grep -qE "^\s*ssl_certificate\s+" "$conf_file" 2>/dev/null && \
        ! grep -qE "^\s*ssl_certificate_key\s+" "$conf_file" 2>/dev/null; then
-        echo "提示: 配置文件不包含SSL配置，跳过: $conf_file" >> "$LOG_FILE"
+        log_and_echo "提示: 配置文件不包含SSL配置，跳过: $conf_file"
         return 0
     fi
     
     # 先检查路径是否正确
     if check_ssl_cert_path "$conf_file" "$new_cert_path" "$new_key_path"; then
-        echo "提示: SSL证书路径已正确，无需修改: $conf_file" >> "$LOG_FILE"
+        log_and_echo "提示: SSL证书路径已正确，无需修改: $conf_file"
         return 0
     fi
     
     # 创建备份文件
     local backup_file="${conf_file}.backup.$(date +%Y%m%d_%H%M%S)"
     cp "$conf_file" "$backup_file" || {
-        echo "错误: 无法创建备份文件: $conf_file" >> "$LOG_FILE"
+        log_and_echo "错误: 无法创建备份文件: $conf_file"
         return 1
     }
     
     # 创建临时文件
     local temp_file="${conf_file}.tmp.$$"
     cp "$conf_file" "$temp_file" || {
-        echo "错误: 无法创建临时文件: $conf_file" >> "$LOG_FILE"
+        log_and_echo "错误: 无法创建临时文件: $conf_file"
         rm -f "$backup_file" 2>/dev/null
         return 1
     }
@@ -394,13 +410,13 @@ update_nginx_ssl_cert() {
     if ! cmp -s "$conf_file" "$temp_file" 2>/dev/null; then
         modified=1
         mv "$temp_file" "$conf_file" || {
-            echo "错误: 无法更新配置文件: $conf_file" >> "$LOG_FILE"
+            log_and_echo "错误: 无法更新配置文件: $conf_file"
             rm -f "$temp_file" "$backup_file" 2>/dev/null
             return 1
         }
-        echo "已更新Nginx配置文件: $conf_file (备份: $backup_file)" >> "$LOG_FILE"
-        echo "  - 新证书路径: ${new_cert_path}" >> "$LOG_FILE"
-        echo "  - 新私钥路径: ${new_key_path}" >> "$LOG_FILE"
+        log_and_echo "已更新Nginx配置文件: $conf_file (备份: $backup_file)"
+        log_and_echo "  - 新证书路径: ${new_cert_path}"
+        log_and_echo "  - 新私钥路径: ${new_key_path}"
     else
         rm -f "$temp_file" 2>/dev/null
     fi
@@ -422,7 +438,7 @@ update_domain_nginx_configs() {
     local updated_count=0
     local total_count=0
     
-    echo "开始查找域名 $domain 对应的Nginx配置文件..." >> "$LOG_FILE"
+    log_and_echo "开始查找域名 $domain 对应的Nginx配置文件..."
     
     # 查找所有匹配的conf文件
     local conf_files
@@ -430,11 +446,11 @@ update_domain_nginx_configs() {
     local find_result=$?
     
     if [ $find_result -ne 0 ] || [ -z "$conf_files" ]; then
-        echo "警告: 未找到域名 $domain 对应的Nginx配置文件" >> "$LOG_FILE"
+        log_and_echo "警告: 未找到域名 $domain 对应的Nginx配置文件"
         if [ -z "$NGINX_CONF_DIR" ]; then
-            echo "提示: 未配置NGINX_CONF_DIR，请在config文件中配置" >> "$LOG_FILE"
+            log_and_echo "提示: 未配置NGINX_CONF_DIR，请在config文件中配置"
         else
-            echo "提示: 在目录 $NGINX_CONF_DIR 中未找到匹配的配置文件" >> "$LOG_FILE"
+            log_and_echo "提示: 在目录 $NGINX_CONF_DIR 中未找到匹配的配置文件"
         fi
         return 1
     fi
@@ -450,7 +466,7 @@ update_domain_nginx_configs() {
         fi
     done <<< "$conf_files"
     
-    echo "Nginx配置更新完成: 共找到 $total_count 个配置文件，更新 $updated_count 个" >> "$LOG_FILE"
+    log_and_echo "Nginx配置更新完成: 共找到 $total_count 个配置文件，更新 $updated_count 个"
     return 0
 }
 
@@ -497,18 +513,18 @@ test_web_server_config() {
             test_cmd="nginx -t"
             ;;
         *)
-            echo "警告: 无法识别web服务器类型: $server_type，跳过配置测试" >> "$LOG_FILE"
+            log_and_echo "警告: 无法识别web服务器类型: $server_type，跳过配置测试"
             return 1
             ;;
     esac
     
-    echo "正在测试 $server_type 配置文件..." >> "$LOG_FILE"
-    if eval "$test_cmd" >> "$LOG_FILE" 2>&1; then
-        echo "$server_type 配置文件测试通过" >> "$LOG_FILE"
+    log_and_echo "正在测试 $server_type 配置文件..."
+    if eval "$test_cmd" 2>&1 | tee -a "$LOG_FILE"; then
+        log_and_echo "$server_type 配置文件测试通过"
         return 0
     else
-        echo "错误: $server_type 配置文件测试失败" >> "$LOG_FILE"
-        echo "请检查配置文件是否有错误，修复后再执行reload" >> "$LOG_FILE"
+        log_and_echo "错误: $server_type 配置文件测试失败"
+        log_and_echo "请检查配置文件是否有错误，修复后再执行reload"
         return 1
     fi
 }
@@ -526,24 +542,24 @@ reload_web_server() {
             reload_cmd="nginx -s reload"
             ;;
         *)
-            echo "警告: 无法识别web服务器类型: $server_type，跳过reload" >> "$LOG_FILE"
+            log_and_echo "警告: 无法识别web服务器类型: $server_type，跳过reload"
             return 1
             ;;
     esac
     
     # 先测试配置文件
     if ! test_web_server_config "$server_type"; then
-        echo "错误: 配置文件测试失败，跳过reload操作" >> "$LOG_FILE"
+        log_and_echo "错误: 配置文件测试失败，跳过reload操作"
         return 1
     fi
     
     # 配置文件测试通过，执行reload
-    echo "正在执行 $server_type reload..." >> "$LOG_FILE"
-    if eval "$reload_cmd" >> "$LOG_FILE" 2>&1; then
-        echo "$server_type reload 成功" >> "$LOG_FILE"
+    log_and_echo "正在执行 $server_type reload..."
+    if eval "$reload_cmd" 2>&1 | tee -a "$LOG_FILE"; then
+        log_and_echo "$server_type reload 成功"
         return 0
     else
-        echo "错误: $server_type reload 失败" >> "$LOG_FILE"
+        log_and_echo "错误: $server_type reload 失败"
         return 1
     fi
 }
@@ -555,7 +571,7 @@ ask_update_nginx_config() {
     
     # 检查是否配置了nginx目录
     if [ -z "$NGINX_CONF_DIR" ] || [ ! -d "$NGINX_CONF_DIR" ]; then
-        echo "提示: 未配置或Nginx配置目录不存在，跳过配置更新" >> "$LOG_FILE"
+        log_and_echo "提示: 未配置或Nginx配置目录不存在，跳过配置更新"
         return 1
     fi
     
@@ -563,22 +579,22 @@ ask_update_nginx_config() {
     local conf_files
     conf_files=$(find_nginx_conf_files "$domain")
     if [ $? -ne 0 ] || [ -z "$conf_files" ]; then
-        echo "提示: 未找到域名 $domain 对应的配置文件，跳过配置更新" >> "$LOG_FILE"
+        log_and_echo "提示: 未找到域名 $domain 对应的配置文件，跳过配置更新"
         return 1
     fi
     
     # 显示找到的配置文件
-    echo "" >> "$LOG_FILE"
-    echo "找到以下Nginx配置文件需要更新:" >> "$LOG_FILE"
+    log_and_echo ""
+    log_and_echo "找到以下Nginx配置文件需要更新:"
     while IFS= read -r conf_file; do
         if [ -n "$conf_file" ]; then
-            echo "  - $conf_file" >> "$LOG_FILE"
+            log_and_echo "  - $conf_file"
         fi
     done <<< "$conf_files"
     
     # 交互式询问（同时输出到日志和终端）
-    echo "" >> "$LOG_FILE"
-    echo "是否将证书配置到OpenResty的server配置文件中? (y/n): " >> "$LOG_FILE"
+    log_and_echo ""
+    log_and_echo "是否将证书配置到OpenResty的server配置文件中? (y/n): "
     
     # 从终端读取用户输入（如果脚本在交互式环境中运行）
     if [ -t 0 ]; then
@@ -591,7 +607,7 @@ ask_update_nginx_config() {
         done <<< "$conf_files"
         echo ""
         read -p "是否将证书配置到OpenResty的server配置文件中? (y/n): " answer
-        echo "用户输入: $answer" >> "$LOG_FILE"
+        log_and_echo "用户输入: $answer"
         
         case "$answer" in
             [Yy]|[Yy][Ee][Ss])
@@ -599,47 +615,47 @@ ask_update_nginx_config() {
                 return 0
                 ;;
             *)
-                echo "用户选择跳过配置更新" >> "$LOG_FILE"
+                log_and_echo "用户选择跳过配置更新"
                 return 1
                 ;;
         esac
     else
         # 非交互式环境，默认跳过
-        echo "非交互式环境，跳过配置更新" >> "$LOG_FILE"
+        log_and_echo "非交互式环境，跳过配置更新"
         return 1
     fi
 }
 
-echo "=============================================================" >> "$LOG_FILE"
-echo "任务开始时间: $(date)" >> "$LOG_FILE"
-echo "脚本目录: $SCRIPT_DIR" >> "$LOG_FILE"
-echo "日志文件: $LOG_FILE" >> "$LOG_FILE"
-echo "证书目录: $CERT_DIR" >> "$LOG_FILE"
-echo "配置文件: $CONFIG_FILE" >> "$LOG_FILE"
-echo "acme.sh 路径: $ACME_SH_PATH" >> "$LOG_FILE"
-echo "CA提供商: $CA_PROVIDER" >> "$LOG_FILE"
-echo "DNS凭证文件: $DNS_CREDENTIALS_FILE" >> "$LOG_FILE"
-echo "DNS等待时间: ${DNS_SLEEP}秒" >> "$LOG_FILE"
-echo "注意: 每个域名必须明确指定DNS提供商（格式: 域名|DNS提供商）" >> "$LOG_FILE"
+log_and_echo "============================================================="
+log_and_echo "任务开始时间: $(date)"
+log_and_echo "脚本目录: $SCRIPT_DIR"
+log_and_echo "日志文件: $LOG_FILE"
+log_and_echo "证书目录: $CERT_DIR"
+log_and_echo "配置文件: $CONFIG_FILE"
+log_and_echo "acme.sh 路径: $ACME_SH_PATH"
+log_and_echo "CA提供商: $CA_PROVIDER"
+log_and_echo "DNS凭证文件: $DNS_CREDENTIALS_FILE"
+log_and_echo "DNS等待时间: ${DNS_SLEEP}秒"
+log_and_echo "注意: 每个域名必须明确指定DNS提供商（格式: 域名|DNS提供商）"
 if [ -n "$NGINX_CONF_DIR" ] && [ -d "$NGINX_CONF_DIR" ]; then
-    echo "Nginx配置目录: $NGINX_CONF_DIR" >> "$LOG_FILE"
+    log_and_echo "Nginx配置目录: $NGINX_CONF_DIR"
 else
-    echo "提示: Nginx配置目录未配置或不存在" >> "$LOG_FILE"
+    log_and_echo "提示: Nginx配置目录未配置或不存在"
 fi
 
 # 1. 升级 acme.sh
-echo "正在检查更新 acme.sh..." >> "$LOG_FILE"
-"$ACME_SH_PATH" --upgrade >> "$LOG_FILE" 2>&1
+log_and_echo "正在检查更新 acme.sh..."
+"$ACME_SH_PATH" --upgrade 2>&1 | tee -a "$LOG_FILE"
 
 # 2. 设置默认 CA（使用配置的CA提供商）
-echo "设置CA提供商: $CA_PROVIDER" >> "$LOG_FILE"
-"$ACME_SH_PATH" --set-default-ca --server "$CA_PROVIDER" >> "$LOG_FILE" 2>&1
+log_and_echo "设置CA提供商: $CA_PROVIDER"
+"$ACME_SH_PATH" --set-default-ca --server "$CA_PROVIDER" 2>&1 | tee -a "$LOG_FILE"
 
 # 加载DNS API凭证
-echo "正在加载DNS API凭证..." >> "$LOG_FILE"
+log_and_echo "正在加载DNS API凭证..."
 if ! load_dns_credentials "$DNS_CREDENTIALS_FILE"; then
-    echo "警告: DNS凭证加载失败，证书申请可能会失败" >> "$LOG_FILE"
-    echo "请确保已正确配置DNS API凭证" >> "$LOG_FILE"
+    log_and_echo "警告: DNS凭证加载失败，证书申请可能会失败"
+    log_and_echo "请确保已正确配置DNS API凭证"
 fi
 
 # 3. 统计域名总数并检查DNS提供商配置
@@ -647,7 +663,7 @@ TOTAL_DOMAINS=$(grep -v '^[[:space:]]*$' "$CONFIG_FILE" | grep -v '^#' | grep -v
 CURRENT_DOMAIN=0
 SUCCESSFUL_DOMAINS=()
 
-echo "共发现 $TOTAL_DOMAINS 个域名需要处理" >> "$LOG_FILE"
+log_and_echo "共发现 $TOTAL_DOMAINS 个域名需要处理"
 
 # 3.1 检查域名DNS提供商配置情况
 DOMAINS_WITHOUT_DNS=()
@@ -687,39 +703,24 @@ done < "$CONFIG_FILE"
 
 # 3.2 强制检查：如果发现未指定DNS提供商的域名，直接报错退出
 if [ ${#DOMAINS_WITHOUT_DNS[@]} -gt 0 ]; then
-    echo "" >> "$LOG_FILE"
-    echo "❌ 错误: 发现 ${#DOMAINS_WITHOUT_DNS[@]} 个域名未指定DNS提供商！" >> "$LOG_FILE"
-    echo "未指定DNS提供商的域名:" >> "$LOG_FILE"
+    log_and_echo ""
+    log_and_echo "❌ 错误: 发现 ${#DOMAINS_WITHOUT_DNS[@]} 个域名未指定DNS提供商！"
+    log_and_echo "未指定DNS提供商的域名:"
     for domain in "${DOMAINS_WITHOUT_DNS[@]}"; do
-        echo "  - $domain" >> "$LOG_FILE"
+        log_and_echo "  - $domain"
     done
-    echo "" >> "$LOG_FILE"
-    echo "❌ 错误: 必须为每个域名明确指定DNS提供商！" >> "$LOG_FILE"
-    echo "格式: 域名|DNS提供商" >> "$LOG_FILE"
-    echo "示例: *.example.com|dns_gd" >> "$LOG_FILE"
-    echo "示例: www.example.com|dns_ali" >> "$LOG_FILE"
-    echo "" >> "$LOG_FILE"
-    echo "请修改配置文件，为所有域名明确指定DNS提供商后重试。" >> "$LOG_FILE"
-    
-    # 输出错误信息到终端
-    echo ""
-    echo "❌ 错误: 发现未指定DNS提供商的域名！"
-    echo "未指定DNS提供商的域名:"
-    for domain in "${DOMAINS_WITHOUT_DNS[@]}"; do
-        echo "  - $domain"
-    done
-    echo ""
-    echo "❌ 必须为每个域名明确指定DNS提供商！"
-    echo "格式: 域名|DNS提供商"
-    echo "示例: *.example.com|dns_gd"
-    echo "示例: www.example.com|dns_ali"
-    echo ""
-    echo "请修改配置文件后重试。"
+    log_and_echo ""
+    log_and_echo "❌ 错误: 必须为每个域名明确指定DNS提供商！"
+    log_and_echo "格式: 域名|DNS提供商"
+    log_and_echo "示例: *.example.com|dns_gd"
+    log_and_echo "示例: www.example.com|dns_ali"
+    log_and_echo ""
+    log_and_echo "请修改配置文件，为所有域名明确指定DNS提供商后重试。"
     
     exit 1
 fi
 
-echo "-------------------------------------------------------------" >> "$LOG_FILE"
+log_and_echo "-------------------------------------------------------------"
 
 # 4. 循环处理每个域名
 while IFS= read -r domain_line || [ -n "$domain_line" ]; do
@@ -746,25 +747,25 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     else
         # 不包含 | 分隔符，这是不允许的，应该在前面的检查中已经被捕获
         # 但为了安全，这里再次检查并报错
-        echo "❌ 错误: 域名未指定DNS提供商: $domain_line" >> "$LOG_FILE"
-        echo "格式: 域名|DNS提供商" >> "$LOG_FILE"
-        echo "示例: *.example.com|dns_gd" >> "$LOG_FILE"
-        echo "跳过此域名" >> "$LOG_FILE"
+        log_and_echo "❌ 错误: 域名未指定DNS提供商: $domain_line"
+        log_and_echo "格式: 域名|DNS提供商"
+        log_and_echo "示例: *.example.com|dns_gd"
+        log_and_echo "跳过此域名"
         continue
     fi
     
     # 验证域名不为空
     if [ -z "$domain" ]; then
-        echo "警告: 跳过空域名行: $domain_line" >> "$LOG_FILE"
+        log_and_echo "警告: 跳过空域名行: $domain_line"
         continue
     fi
     
     # 验证DNS提供商不为空（强制要求）
     if [ -z "$DOMAIN_DNS_PROVIDER" ]; then
-        echo "❌ 错误: 域名 $domain 未指定DNS提供商！" >> "$LOG_FILE"
-        echo "格式: 域名|DNS提供商" >> "$LOG_FILE"
-        echo "示例: $domain|dns_gd" >> "$LOG_FILE"
-        echo "跳过此域名" >> "$LOG_FILE"
+        log_and_echo "❌ 错误: 域名 $domain 未指定DNS提供商！"
+        log_and_echo "格式: 域名|DNS提供商"
+        log_and_echo "示例: $domain|dns_gd"
+        log_and_echo "跳过此域名"
         continue
     fi
     
@@ -784,51 +785,53 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
         CERT_TYPE="单域名证书"
     fi
     
-    echo "" >> "$LOG_FILE"
-    echo "[$CURRENT_DOMAIN/$TOTAL_DOMAINS] 正在处理域名: $domain" >> "$LOG_FILE"
-    echo "证书类型: $CERT_TYPE" >> "$LOG_FILE"
-    echo "使用域名: $domain" >> "$LOG_FILE"
-    echo "主域名: $MAIN_DOMAIN" >> "$LOG_FILE"
-    echo "DNS提供商: $DOMAIN_DNS_PROVIDER" >> "$LOG_FILE"
-    echo "-------------------------------------------------------------" >> "$LOG_FILE"
+    log_and_echo ""
+    log_and_echo "[$CURRENT_DOMAIN/$TOTAL_DOMAINS] 正在处理域名: $domain"
+    log_and_echo "证书类型: $CERT_TYPE"
+    log_and_echo "使用域名: $domain"
+    log_and_echo "主域名: $MAIN_DOMAIN"
+    log_and_echo "DNS提供商: $DOMAIN_DNS_PROVIDER"
+    log_and_echo "-------------------------------------------------------------"
     
     # 4.1 申请/续签证书
     # 注意：--dnssleep 参数会让程序内部等待指定秒数，等待DNS记录传播完成
     # 使用域名指定的DNS提供商和原始域名格式申请证书（支持通配符和单域名）
-    echo "开始申请/续签证书: $domain ($CERT_TYPE)" >> "$LOG_FILE"
-    echo "DNS提供商: $DOMAIN_DNS_PROVIDER" >> "$LOG_FILE"
-    echo "CA提供商: $CA_PROVIDER" >> "$LOG_FILE"
-    echo "DNS等待时间: ${DNS_SLEEP}秒" >> "$LOG_FILE"
+    log_and_echo "开始申请/续签证书: $domain ($CERT_TYPE)"
+    log_and_echo "DNS提供商: $DOMAIN_DNS_PROVIDER"
+    log_and_echo "CA提供商: $CA_PROVIDER"
+    log_and_echo "DNS等待时间: ${DNS_SLEEP}秒"
     
     # 验证DNS提供商格式（应该以 dns_ 开头）
     if [[ ! "$DOMAIN_DNS_PROVIDER" =~ ^dns_ ]]; then
-        echo "错误: DNS提供商格式不正确: $DOMAIN_DNS_PROVIDER，应为 dns_xxx 格式" >> "$LOG_FILE"
-        echo "跳过域名: $domain" >> "$LOG_FILE"
+        log_and_echo "错误: DNS提供商格式不正确: $DOMAIN_DNS_PROVIDER，应为 dns_xxx 格式"
+        log_and_echo "跳过域名: $domain"
         continue
     fi
     
+    log_and_echo "正在执行证书申请命令..."
     if "$ACME_SH_PATH" --issue --dns "$DOMAIN_DNS_PROVIDER" \
         -d "$domain" \
-        --dnssleep "$DNS_SLEEP" >> "$LOG_FILE" 2>&1; then
-        echo "证书申请/续签成功: $domain ($CERT_TYPE)" >> "$LOG_FILE"
+        --dnssleep "$DNS_SLEEP" 2>&1 | tee -a "$LOG_FILE"; then
+        log_and_echo "证书申请/续签成功: $domain ($CERT_TYPE)"
     else
-        echo "警告: 证书申请/续签失败: $domain，DNS提供商: $DOMAIN_DNS_PROVIDER，跳过安装步骤" >> "$LOG_FILE"
-        echo "提示: 请检查DNS提供商是否正确，以及对应的API凭证是否已配置" >> "$LOG_FILE"
+        log_and_echo "警告: 证书申请/续签失败: $domain，DNS提供商: $DOMAIN_DNS_PROVIDER，跳过安装步骤"
+        log_and_echo "提示: 请检查DNS提供商是否正确，以及对应的API凭证是否已配置"
         continue
     fi
     
     # 4.2 安装证书
     # 注意：不在安装时执行reload，将在所有操作完成后统一执行
-    echo "开始安装证书: $domain" >> "$LOG_FILE"
+    log_and_echo "开始安装证书: $domain"
     
+    log_and_echo "正在执行证书安装命令..."
     if "$ACME_SH_PATH" --install-cert \
         -d "$domain" \
         --key-file "${CERT_DIR}/${MAIN_DOMAIN}.key" \
-        --fullchain-file "${CERT_DIR}/${MAIN_DOMAIN}.pem" >> "$LOG_FILE" 2>&1; then
-        echo "证书安装成功: $domain" >> "$LOG_FILE"
+        --fullchain-file "${CERT_DIR}/${MAIN_DOMAIN}.pem" 2>&1 | tee -a "$LOG_FILE"; then
+        log_and_echo "证书安装成功: $domain"
         SUCCESSFUL_DOMAINS+=("$domain|$MAIN_DOMAIN")
     else
-        echo "错误: 证书安装失败: $domain" >> "$LOG_FILE"
+        log_and_echo "错误: 证书安装失败: $domain"
     fi
     
 done < "$CONFIG_FILE"
@@ -836,16 +839,16 @@ done < "$CONFIG_FILE"
 # 5. 证书生成完毕后，询问是否更新nginx配置
 NGINX_CONFIG_UPDATED=0
 if [ ${#SUCCESSFUL_DOMAINS[@]} -gt 0 ]; then
-    echo "" >> "$LOG_FILE"
-    echo "-------------------------------------------------------------" >> "$LOG_FILE"
-    echo "证书生成完成，共成功生成 ${#SUCCESSFUL_DOMAINS[@]} 个证书" >> "$LOG_FILE"
-    echo "开始处理Nginx配置更新..." >> "$LOG_FILE"
-    echo "-------------------------------------------------------------" >> "$LOG_FILE"
+    log_and_echo ""
+    log_and_echo "-------------------------------------------------------------"
+    log_and_echo "证书生成完成，共成功生成 ${#SUCCESSFUL_DOMAINS[@]} 个证书"
+    log_and_echo "开始处理Nginx配置更新..."
+    log_and_echo "-------------------------------------------------------------"
     
     for domain_info in "${SUCCESSFUL_DOMAINS[@]}"; do
         IFS='|' read -r domain main_domain <<< "$domain_info"
-        echo "" >> "$LOG_FILE"
-        echo "处理域名: $domain" >> "$LOG_FILE"
+        log_and_echo ""
+        log_and_echo "处理域名: $domain"
         if ask_update_nginx_config "$domain" "$main_domain"; then
             # 如果更新了配置，记录标志
             NGINX_CONFIG_UPDATED=1
@@ -856,28 +859,28 @@ fi
 # 6. 所有操作完成后，统一执行web服务器reload
 # 只有在证书安装成功且nginx配置更新成功的情况下才执行reload
 if [ ${#SUCCESSFUL_DOMAINS[@]} -gt 0 ]; then
-    echo "" >> "$LOG_FILE"
-    echo "-------------------------------------------------------------" >> "$LOG_FILE"
-    echo "开始检测web服务器类型并执行reload..." >> "$LOG_FILE"
+    log_and_echo ""
+    log_and_echo "-------------------------------------------------------------"
+    log_and_echo "开始检测web服务器类型并执行reload..."
     
     # 检测web服务器类型
     WEB_SERVER_TYPE=$(detect_web_server)
     if [ "$WEB_SERVER_TYPE" != "unknown" ]; then
-        echo "检测到web服务器: $WEB_SERVER_TYPE" >> "$LOG_FILE"
+        log_and_echo "检测到web服务器: $WEB_SERVER_TYPE"
         
         # 执行reload
         if reload_web_server "$WEB_SERVER_TYPE"; then
-            echo "$WEB_SERVER_TYPE reload 执行成功" >> "$LOG_FILE"
+            log_and_echo "$WEB_SERVER_TYPE reload 执行成功"
         else
-            echo "警告: $WEB_SERVER_TYPE reload 执行失败，请手动检查" >> "$LOG_FILE"
+            log_and_echo "警告: $WEB_SERVER_TYPE reload 执行失败，请手动检查"
         fi
     else
-        echo "警告: 无法检测到web服务器（nginx或openresty），跳过reload" >> "$LOG_FILE"
-        echo "提示: 请确保已安装nginx或openresty，或手动执行reload" >> "$LOG_FILE"
+        log_and_echo "警告: 无法检测到web服务器（nginx或openresty），跳过reload"
+        log_and_echo "提示: 请确保已安装nginx或openresty，或手动执行reload"
     fi
 fi
 
-echo "" >> "$LOG_FILE"
-echo "-------------------------------------------------------------" >> "$LOG_FILE"
-echo "任务结束时间: $(date)" >> "$LOG_FILE"
-echo "=============================================================" >> "$LOG_FILE"
+log_and_echo ""
+log_and_echo "-------------------------------------------------------------"
+log_and_echo "任务结束时间: $(date)"
+log_and_echo "============================================================="
