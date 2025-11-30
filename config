@@ -34,17 +34,27 @@ DNS_SLEEP=300
 # 
 # ⚠️  强制要求：必须为每个域名明确指定DNS提供商！
 # 
-# 格式：域名|DNS提供商 （必须格式，不允许省略DNS提供商）
+# 格式：域名|DNS提供商 或 域名|DNS提供商|账号标识
+#   - 基本格式：域名|DNS提供商 （使用默认账号）
+#   - 多账号格式：域名|DNS提供商|账号标识 （使用指定账号）
 # 
 # 通配符格式示例：
-#   *.example.com|dns_gd （使用GoDaddy）
-#   *.v1.example.com|dns_ali （使用阿里云）
-#   *.test.com|dns_dp （使用DNSPod）
+#   *.example.com|dns_gd （使用GoDaddy默认账号）
+#   *.v1.example.com|dns_ali （使用阿里云默认账号）
+#   *.test.com|dns_ali|account1 （使用阿里云account1账号）
+#   *.test.com|dns_dp （使用DNSPod默认账号）
 # 
 # 单域名格式示例：
-#   example.com|dns_cf （使用Cloudflare）
-#   www.example.com|dns_dp （使用DNSPod）
-#   api.v1.example.com|dns_ali （使用阿里云）
+#   example.com|dns_cf （使用Cloudflare默认账号）
+#   www.example.com|dns_dp （使用DNSPod默认账号）
+#   api.v1.example.com|dns_ali （使用阿里云默认账号）
+#   api.v2.example.com|dns_ali|account2 （使用阿里云account2账号）
+# 
+# 多账号配置说明：
+#   如果您有多个相同DNS提供商的账号（如多个阿里云账号、多个GoDaddy账号等），
+#   可以使用账号标识来区分不同的账号。账号标识可以是任意字符串（建议使用account1、account2等）。
+#   在dns_credentials文件中，需要为每个账号配置对应的环境变量，格式为：变量名_account标识
+#   例如：Ali_Key_account1、Ali_Secret_account1 表示account1账号的阿里云凭证
 # 
 # 支持的DNS提供商：
 #   dns_gd (GoDaddy), dns_cf (Cloudflare), dns_ali (阿里云), dns_dp (DNSPod/腾讯云)
@@ -57,7 +67,20 @@ DNS_SLEEP=300
 # 1. 必须为每个域名明确指定DNS提供商，格式：域名|DNS提供商
 # 2. 如果域名未指定DNS提供商，脚本将直接报错退出
 # 3. 请确保在dns_credentials文件中配置了对应的DNS提供商API凭证
-*.example.com|dns_gd
-example.com|dns_dp
-www.example.com|dns_ali
-api.v1.example.com|dns_cf
+# ========== 域名配置示例 ==========
+# 基本格式（使用默认账号）：
+# *.example.com|dns_gd
+# example.com|dns_dp
+# www.example.com|dns_ali
+# api.v1.example.com|dns_cf
+
+# 多账号格式（使用指定账号）：
+# *.test.com|dns_ali|account1
+# *.test2.com|dns_ali|account2
+# www.test.com|dns_gd|account1
+# api.test.com|dns_dp|account1
+
+# 混合使用示例（部分使用默认账号，部分使用指定账号）：
+# *.example1.com|dns_ali          # 使用默认账号
+# *.example2.com|dns_ali|account1 # 使用account1账号
+# *.example3.com|dns_ali|account2 # 使用account2账号

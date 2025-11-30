@@ -2,8 +2,30 @@
 
 # Let's Encrypt 限制每个域名每周只能签发5次重复证书
 
+# 设置错误处理
+# -u: 使用未定义变量时报错（提高代码质量，防止使用未定义变量）
+# 注意：不使用 -e，因为脚本需要在某些错误时继续执行（如证书申请失败时继续处理下一个域名）
+# 注意：不使用 -o pipefail，因为某些管道的失败是预期的（如 grep 未找到匹配时）
+set -u
+
 # 定义脚本所在目录（兼容各种调用方式）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 临时文件列表（用于清理）
+TEMP_FILES=()
+
+# 清理函数：删除所有临时文件
+cleanup_temp_files() {
+    local file
+    for file in "${TEMP_FILES[@]}"; do
+        if [ -f "$file" ]; then
+            rm -f "$file" 2>/dev/null || true
+        fi
+    done
+}
+
+# 注册退出时清理临时文件
+trap cleanup_temp_files EXIT INT TERM
 
 # 函数：检查acme.sh是否已安装
 check_acme_installed() {
@@ -244,7 +266,7 @@ if [[ ! "$DNS_CREDENTIALS_FILE" =~ ^/ ]]; then
     DNS_CREDENTIALS_FILE="${SCRIPT_DIR}/${DNS_CREDENTIALS_FILE}"
 fi
 
-# 函数：加载DNS API凭证
+# 函数：加载DNS API凭证（默认账号）
 load_dns_credentials() {
     local cred_file="$1"
     
@@ -261,7 +283,7 @@ load_dns_credentials() {
     fi
     
     # 读取凭证文件并导出环境变量
-    # 只处理未注释的export语句
+    # 只处理未注释的export语句（默认账号，不带账号标识的）
     while IFS= read -r line || [ -n "$line" ]; do
         # 跳过空行和注释行
         line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -269,17 +291,165 @@ load_dns_credentials() {
             continue
         fi
         
-        # 如果是export语句，执行它
-        if [[ "$line" =~ ^export[[:space:]]+ ]]; then
+        # 如果是export语句，且不包含账号标识（不包含 _account 后缀），执行它
+        if [[ "$line" =~ ^export[[:space:]]+ ]] && [[ ! "$line" =~ _account[0-9a-zA-Z_]+= ]]; then
             # 安全地执行export语句
-            eval "$line" 2>/dev/null || {
-                log_and_echo "警告: 无法加载环境变量: $line"
-            }
+            # 验证格式：export VAR_NAME="value" 或 export VAR_NAME='value' 或 export VAR_NAME=value
+            if [[ "$line" =~ ^export[[:space:]]+[A-Za-z_][A-Za-z0-9_]*= ]]; then
+                eval "$line" 2>/dev/null || {
+                    log_and_echo "警告: 无法加载环境变量: $line"
+                }
+            else
+                log_and_echo "警告: 环境变量格式不正确，跳过: $line"
+            fi
         fi
     done < "$cred_file"
     
-    log_and_echo "DNS凭证文件已加载: $cred_file"
+    log_and_echo "DNS凭证文件已加载: $cred_file (默认账号)"
     return 0
+}
+
+# 函数：加载指定账号的DNS API凭证
+load_dns_credentials_for_account() {
+    local cred_file="$1"
+    local dns_provider="$2"
+    local account_id="$3"
+    
+    if [ -z "$account_id" ]; then
+        # 如果没有指定账号标识，使用默认账号（已经在脚本开始时加载）
+        return 0
+    fi
+    
+    if [ ! -f "$cred_file" ]; then
+        log_and_echo "警告: DNS凭证文件不存在: $cred_file"
+        return 1
+    fi
+    
+    # 检查文件是否可读
+    if [ ! -r "$cred_file" ]; then
+        log_and_echo "错误: DNS凭证文件不可读: $cred_file"
+        return 1
+    fi
+    
+    # 根据DNS提供商确定环境变量前缀
+    local var_prefix=""
+    case "$dns_provider" in
+        dns_ali)
+            var_prefix="Ali_"
+            ;;
+        dns_gd)
+            var_prefix="GD_"
+            ;;
+        dns_cf)
+            var_prefix="CF_"
+            ;;
+        dns_dp)
+            var_prefix="DP_"
+            ;;
+        dns_aws)
+            var_prefix="AWS_"
+            ;;
+        dns_tencent)
+            var_prefix="Tencent_"
+            ;;
+        dns_he)
+            var_prefix="HE_"
+            ;;
+        *)
+            # 对于其他DNS提供商，尝试使用通用格式
+            var_prefix=""
+            ;;
+    esac
+    
+    # 如果无法确定前缀，尝试从文件中查找
+    if [ -z "$var_prefix" ]; then
+        log_and_echo "警告: 无法确定DNS提供商 $dns_provider 的环境变量前缀，尝试自动检测"
+    fi
+    
+    # 读取凭证文件，查找指定账号的凭证
+    # 根据DNS提供商确定需要查找的环境变量名
+    local var_patterns=()
+    case "$dns_provider" in
+        dns_ali)
+            var_patterns=("Ali_Key_account${account_id}" "Ali_Secret_account${account_id}")
+            ;;
+        dns_gd)
+            var_patterns=("GD_Key_account${account_id}" "GD_Secret_account${account_id}")
+            ;;
+        dns_cf)
+            var_patterns=("CF_Token_account${account_id}" "CF_Account_ID_account${account_id}" "CF_Key_account${account_id}" "CF_Email_account${account_id}")
+            ;;
+        dns_dp)
+            var_patterns=("DP_Id_account${account_id}" "DP_Key_account${account_id}")
+            ;;
+        dns_aws)
+            var_patterns=("AWS_ACCESS_KEY_ID_account${account_id}" "AWS_SECRET_ACCESS_KEY_account${account_id}" "AWS_DEFAULT_REGION_account${account_id}")
+            ;;
+        dns_tencent)
+            var_patterns=("Tencent_SecretId_account${account_id}" "Tencent_SecretKey_account${account_id}")
+            ;;
+        dns_he)
+            var_patterns=("HE_Username_account${account_id}" "HE_Password_account${account_id}")
+            ;;
+        *)
+            # 对于其他DNS提供商，尝试通用模式
+            var_patterns=(".*_account${account_id}")
+            ;;
+    esac
+    
+    # 读取凭证文件，查找并加载指定账号的凭证
+    local found_vars=0
+    local temp_vars=()
+    
+    while IFS= read -r line || [ -n "$line" ]; do
+        # 跳过空行和注释行
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -z "$line" ] || [[ "$line" =~ ^# ]]; then
+            continue
+        fi
+        
+        # 查找包含账号标识的export语句
+        if [[ "$line" =~ ^export[[:space:]]+ ]] && [[ "$line" =~ _account${account_id}= ]]; then
+            # 提取变量名（去掉export和账号标识后缀）
+            local var_with_account=$(echo "$line" | sed 's/^export[[:space:]]*//' | cut -d'=' -f1)
+            # 验证变量名格式（只允许字母、数字、下划线）
+            if [[ ! "$var_with_account" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                log_and_echo "警告: 变量名格式不正确，跳过: $var_with_account"
+                continue
+            fi
+            
+            # 提取标准变量名（去掉_account${account_id}后缀）
+            local standard_var=$(echo "$var_with_account" | sed "s/_account${account_id}$//")
+            # 验证标准变量名格式
+            if [[ ! "$standard_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                log_and_echo "警告: 标准变量名格式不正确，跳过: $standard_var"
+                continue
+            fi
+            
+            # 提取变量值（安全地处理引号）
+            local var_value=$(echo "$line" | sed 's/^export[[:space:]]*[^=]*=//' | sed 's/^["'\'']//;s/["'\'']$//')
+            # 验证变量值不包含危险字符（防止命令注入）
+            if [[ "$var_value" =~ [\`\$\(\)\;] ]]; then
+                log_and_echo "警告: 变量值包含危险字符，跳过: $standard_var"
+                continue
+            fi
+            
+            # 导出为标准环境变量名（使用printf避免命令注入）
+            printf -v "$standard_var" "%s" "$var_value"
+            export "$standard_var" 2>/dev/null || {
+                log_and_echo "警告: 无法设置环境变量: $standard_var"
+            }
+            found_vars=$((found_vars + 1))
+        fi
+    done < "$cred_file"
+    
+    if [ $found_vars -gt 0 ]; then
+        log_and_echo "已加载账号 $account_id 的DNS凭证（找到 $found_vars 个变量）"
+        return 0
+    else
+        log_and_echo "警告: 未找到账号 $account_id 的DNS凭证，将使用默认账号"
+        return 1
+    fi
 }
 
 # 函数：根据域名找到对应的nginx配置文件
@@ -404,11 +574,26 @@ update_nginx_ssl_cert() {
         return 1
     }
     
-    # 替换ssl_certificate路径（匹配各种格式）
-    sed -i -E "s|^\s*ssl_certificate\s+[^;]+;|ssl_certificate ${new_cert_path};|g" "$temp_file" 2>/dev/null
+    # 验证路径格式（防止路径注入）
+    if [[ "$new_cert_path" =~ [\`\$\(\)\;] ]] || [[ "$new_key_path" =~ [\`\$\(\)\;] ]]; then
+        log_and_echo "错误: 证书路径包含危险字符，跳过更新: $conf_file"
+        rm -f "$temp_file" "$backup_file" 2>/dev/null
+        return 1
+    fi
     
-    # 替换ssl_certificate_key路径
-    sed -i -E "s|^\s*ssl_certificate_key\s+[^;]+;|ssl_certificate_key ${new_key_path};|g" "$temp_file" 2>/dev/null
+    # 替换ssl_certificate路径（匹配各种格式）
+    # 兼容macOS和Linux：macOS的sed需要 -i ''，Linux的sed需要 -i
+    # 使用单引号保护路径变量，避免特殊字符被解释
+    local sed_cert_pattern="ssl_certificate ${new_cert_path};"
+    local sed_key_pattern="ssl_certificate_key ${new_key_path};"
+    
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' -E "s|^\s*ssl_certificate\s+[^;]+;|${sed_cert_pattern}|g" "$temp_file" 2>/dev/null
+        sed -i '' -E "s|^\s*ssl_certificate_key\s+[^;]+;|${sed_key_pattern}|g" "$temp_file" 2>/dev/null
+    else
+        sed -i -E "s|^\s*ssl_certificate\s+[^;]+;|${sed_cert_pattern}|g" "$temp_file" 2>/dev/null
+        sed -i -E "s|^\s*ssl_certificate_key\s+[^;]+;|${sed_key_pattern}|g" "$temp_file" 2>/dev/null
+    fi
     
     # 检查是否有修改
     if ! cmp -s "$conf_file" "$temp_file" 2>/dev/null; then
@@ -444,6 +629,12 @@ update_domain_nginx_configs() {
     
     log_and_echo "开始查找域名 $domain 对应的Nginx配置文件..."
     
+    # 判断域名类型（用于错误提示）
+    local is_wildcard_local=0
+    if validate_wildcard_domain "$domain"; then
+        is_wildcard_local=1
+    fi
+    
     # 查找所有匹配的conf文件
     local conf_files
     conf_files=$(find_nginx_conf_files "$domain")
@@ -456,7 +647,7 @@ update_domain_nginx_configs() {
         else
             log_and_echo "提示: 在目录 $NGINX_CONF_DIR 中未找到匹配的配置文件"
             log_and_echo "查找规则:"
-            if [ $is_wildcard -eq 1 ]; then
+            if [ $is_wildcard_local -eq 1 ]; then
                 log_and_echo "  通配符域名 $domain -> 主域名 $main_domain"
                 log_and_echo "  匹配规则: 文件名以 .$main_domain 结尾或等于 $main_domain"
             else
@@ -541,14 +732,33 @@ test_web_server_config() {
     esac
     
     log_and_echo "正在测试 $server_type 配置文件..."
-    if eval "$test_cmd" 2>&1 | tee -a "$LOG_FILE"; then
-        log_and_echo "$server_type 配置文件测试通过"
-        return 0
-    else
-        log_and_echo "错误: $server_type 配置文件测试失败"
-        log_and_echo "请检查配置文件是否有错误，修复后再执行reload"
-        return 1
-    fi
+    # 安全地执行测试命令（不使用eval，直接执行）
+    case "$server_type" in
+        openresty)
+            if openresty -t 2>&1 | tee -a "$LOG_FILE"; then
+                log_and_echo "$server_type 配置文件测试通过"
+                return 0
+            else
+                log_and_echo "错误: $server_type 配置文件测试失败"
+                log_and_echo "请检查配置文件是否有错误，修复后再执行reload"
+                return 1
+            fi
+            ;;
+        nginx)
+            if nginx -t 2>&1 | tee -a "$LOG_FILE"; then
+                log_and_echo "$server_type 配置文件测试通过"
+                return 0
+            else
+                log_and_echo "错误: $server_type 配置文件测试失败"
+                log_and_echo "请检查配置文件是否有错误，修复后再执行reload"
+                return 1
+            fi
+            ;;
+        *)
+            log_and_echo "错误: 无法识别web服务器类型: $server_type"
+            return 1
+            ;;
+    esac
 }
 
 # 函数：执行web服务器reload
@@ -577,13 +787,31 @@ reload_web_server() {
     
     # 配置文件测试通过，执行reload
     log_and_echo "正在执行 $server_type reload..."
-    if eval "$reload_cmd" 2>&1 | tee -a "$LOG_FILE"; then
-        log_and_echo "$server_type reload 成功"
-        return 0
-    else
-        log_and_echo "错误: $server_type reload 失败"
-        return 1
-    fi
+    # 安全地执行reload命令（不使用eval，直接执行）
+    case "$server_type" in
+        openresty)
+            if openresty -s reload 2>&1 | tee -a "$LOG_FILE"; then
+                log_and_echo "$server_type reload 成功"
+                return 0
+            else
+                log_and_echo "错误: $server_type reload 失败"
+                return 1
+            fi
+            ;;
+        nginx)
+            if nginx -s reload 2>&1 | tee -a "$LOG_FILE"; then
+                log_and_echo "$server_type reload 成功"
+                return 0
+            else
+                log_and_echo "错误: $server_type reload 失败"
+                return 1
+            fi
+            ;;
+        *)
+            log_and_echo "错误: 无法识别web服务器类型: $server_type"
+            return 1
+            ;;
+    esac
 }
 
 # 函数：交互式询问是否更新nginx配置
@@ -736,11 +964,19 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     fi
     
     # 检查是否指定了DNS提供商
+    # 支持格式：域名|DNS提供商 或 域名|DNS提供商|账号标识
     if [[ "$domain_line" =~ \| ]]; then
         domain=$(echo "$domain_line" | cut -d'|' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         dns_provider=$(echo "$domain_line" | cut -d'|' -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        account_id=$(echo "$domain_line" | cut -d'|' -f3 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
         if [ -n "$domain" ] && [ -n "$dns_provider" ]; then
-            DOMAINS_WITH_DNS+=("$domain|$dns_provider")
+            # 如果有账号标识，添加到记录中
+            if [ -n "$account_id" ]; then
+                DOMAINS_WITH_DNS+=("$domain|$dns_provider|$account_id")
+            else
+                DOMAINS_WITH_DNS+=("$domain|$dns_provider")
+            fi
             # 记录使用的DNS提供商（去重）
             if [[ ! " ${DNS_PROVIDERS_USED[@]} " =~ " ${dns_provider} " ]]; then
                 DNS_PROVIDERS_USED+=("$dns_provider")
@@ -764,9 +1000,10 @@ if [ ${#DOMAINS_WITHOUT_DNS[@]} -gt 0 ]; then
     done
     log_and_echo ""
     log_and_echo "❌ 错误: 必须为每个域名明确指定DNS提供商！"
-    log_and_echo "格式: 域名|DNS提供商"
+    log_and_echo "格式: 域名|DNS提供商 或 域名|DNS提供商|账号标识"
     log_and_echo "示例: *.example.com|dns_gd"
     log_and_echo "示例: www.example.com|dns_ali"
+    log_and_echo "示例: *.example.com|dns_ali|account1 （使用账号标识account1）"
     log_and_echo ""
     log_and_echo "请修改配置文件，为所有域名明确指定DNS提供商后重试。"
     
@@ -791,18 +1028,20 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     CURRENT_DOMAIN=$((CURRENT_DOMAIN + 1))
     
     # 解析域名和DNS提供商
-    # 格式：域名|DNS提供商（强制要求）
+    # 格式：域名|DNS提供商 或 域名|DNS提供商|账号标识
     DOMAIN_DNS_PROVIDER=""
+    DOMAIN_ACCOUNT_ID=""
     if [[ "$domain_line" =~ \| ]]; then
-        # 包含 | 分隔符，提取域名和DNS提供商
+        # 包含 | 分隔符，提取域名、DNS提供商和可选的账号标识
         domain=$(echo "$domain_line" | cut -d'|' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DOMAIN_DNS_PROVIDER=$(echo "$domain_line" | cut -d'|' -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        DOMAIN_ACCOUNT_ID=$(echo "$domain_line" | cut -d'|' -f3 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     else
         # 不包含 | 分隔符，这是不允许的，应该在前面的检查中已经被捕获
         # 但为了安全，这里再次检查并报错
         log_and_echo "❌ 错误: 域名未指定DNS提供商: $domain_line"
-        log_and_echo "格式: 域名|DNS提供商"
-        log_and_echo "示例: *.example.com|dns_gd"
+        log_and_echo "格式: 域名|DNS提供商 或 域名|DNS提供商|账号标识"
+        log_and_echo "示例: *.example.com|dns_gd 或 *.example.com|dns_ali|account1"
         log_and_echo "跳过此域名"
         continue
     fi
@@ -851,6 +1090,11 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     # 使用域名指定的DNS提供商和原始域名格式申请证书（支持通配符和单域名）
     log_and_echo "开始申请/续签证书: $domain ($CERT_TYPE)"
     log_and_echo "DNS提供商: $DOMAIN_DNS_PROVIDER"
+    if [ -n "$DOMAIN_ACCOUNT_ID" ]; then
+        log_and_echo "账号标识: $DOMAIN_ACCOUNT_ID"
+    else
+        log_and_echo "账号标识: 默认账号"
+    fi
     log_and_echo "CA提供商: $CA_PROVIDER"
     log_and_echo "DNS等待时间: ${DNS_SLEEP}秒"
     
@@ -861,9 +1105,21 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
         continue
     fi
     
+    # 加载指定账号的DNS凭证（如果指定了账号标识）
+    if [ -n "$DOMAIN_ACCOUNT_ID" ]; then
+        log_and_echo "正在加载账号 $DOMAIN_ACCOUNT_ID 的DNS凭证..."
+        if ! load_dns_credentials_for_account "$DNS_CREDENTIALS_FILE" "$DOMAIN_DNS_PROVIDER" "$DOMAIN_ACCOUNT_ID"; then
+            log_and_echo "警告: 无法加载账号 $DOMAIN_ACCOUNT_ID 的DNS凭证，将使用默认账号"
+        fi
+    fi
+    
     log_and_echo "正在执行证书申请命令..."
     # 使用临时文件保存输出，以便检查错误信息和退出码
-    issue_output=$(mktemp)
+    issue_output=$(mktemp) || {
+        log_and_echo "错误: 无法创建临时文件"
+        continue
+    }
+    TEMP_FILES+=("$issue_output")
     issue_status=0
     
     if "$ACME_SH_PATH" --issue --dns "$DOMAIN_DNS_PROVIDER" \
@@ -887,7 +1143,7 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     if [ $issue_status -ne 0 ] || [ $has_error -eq 1 ]; then
         log_and_echo "警告: 证书申请/续签失败: $domain，DNS提供商: $DOMAIN_DNS_PROVIDER，跳过安装步骤"
         log_and_echo "提示: 请检查DNS提供商是否正确，以及对应的API凭证是否已配置"
-        rm -f "$issue_output"
+        # 临时文件会在脚本退出时自动清理
         continue
     fi
     
@@ -900,7 +1156,7 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     if [ ! -d "$cert_dir" ]; then
         log_and_echo "警告: 证书申请失败，证书目录不存在: $cert_dir，跳过安装步骤"
         log_and_echo "提示: 请检查DNS验证是否成功，以及证书是否真的申请成功"
-        rm -f "$issue_output"
+        # 临时文件会在脚本退出时自动清理
         continue
     fi
     
@@ -908,11 +1164,9 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     if [ ! -f "$cert_dir/fullchain.cer" ] || [ ! -f "$cert_dir/${domain}.key" ]; then
         log_and_echo "警告: 证书申请失败，证书文件不存在: $cert_dir，跳过安装步骤"
         log_and_echo "提示: 请检查DNS验证是否成功，以及证书是否真的申请成功"
-        rm -f "$issue_output"
+        # 临时文件会在脚本退出时自动清理
         continue
     fi
-    
-    rm -f "$issue_output"
     log_and_echo "证书申请/续签成功: $domain ($CERT_TYPE)"
     
     # 4.2 安装证书
@@ -921,7 +1175,11 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     
     log_and_echo "正在执行证书安装命令..."
     # 使用临时文件保存输出，以便检查错误信息和退出码
-    install_output=$(mktemp)
+    install_output=$(mktemp) || {
+        log_and_echo "错误: 无法创建临时文件"
+        continue
+    }
+    TEMP_FILES+=("$install_output")
     install_status=0
     
     if "$ACME_SH_PATH" --install-cert \
@@ -945,24 +1203,22 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     # 检查退出码和错误信息
     if [ $install_status -ne 0 ] || [ $has_install_error -eq 1 ]; then
         log_and_echo "错误: 证书安装失败: $domain"
-        rm -f "$install_output"
+        # 临时文件会在脚本退出时自动清理
         continue
     fi
     
     # 验证安装后的证书文件是否存在且不为空
     if [ ! -f "${CERT_DIR}/${MAIN_DOMAIN}.key" ] || [ ! -s "${CERT_DIR}/${MAIN_DOMAIN}.key" ]; then
         log_and_echo "错误: 证书私钥文件不存在或为空: ${CERT_DIR}/${MAIN_DOMAIN}.key"
-        rm -f "$install_output"
+        # 临时文件会在脚本退出时自动清理
         continue
     fi
     
     if [ ! -f "${CERT_DIR}/${MAIN_DOMAIN}.pem" ] || [ ! -s "${CERT_DIR}/${MAIN_DOMAIN}.pem" ]; then
         log_and_echo "错误: 证书文件不存在或为空: ${CERT_DIR}/${MAIN_DOMAIN}.pem"
-        rm -f "$install_output"
+        # 临时文件会在脚本退出时自动清理
         continue
     fi
-    
-    rm -f "$install_output"
     log_and_echo "证书安装成功: $domain"
     log_and_echo "证书文件: ${CERT_DIR}/${MAIN_DOMAIN}.pem"
     log_and_echo "私钥文件: ${CERT_DIR}/${MAIN_DOMAIN}.key"
