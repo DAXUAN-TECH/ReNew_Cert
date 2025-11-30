@@ -173,6 +173,7 @@ fi
 NGINX_CONF_DIR=""
 CA_PROVIDER="letsencrypt"  # 默认值：Let's Encrypt
 DNS_CREDENTIALS_FILE="dns_credentials"  # 默认值：脚本同级目录下的dns_credentials文件
+DNS_SLEEP=300  # 默认值：300秒（5分钟）
 
 while IFS= read -r line || [ -n "$line" ]; do
     line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -207,6 +208,17 @@ while IFS= read -r line || [ -n "$line" ]; do
     # 检查是否是DNS_CREDENTIALS_FILE配置
     if [[ "$line" =~ ^DNS_CREDENTIALS_FILE= ]]; then
         DNS_CREDENTIALS_FILE=$(echo "$line" | sed 's/^DNS_CREDENTIALS_FILE=//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        continue
+    fi
+    
+    # 检查是否是DNS_SLEEP配置
+    if [[ "$line" =~ ^DNS_SLEEP= ]]; then
+        DNS_SLEEP=$(echo "$line" | sed 's/^DNS_SLEEP=//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        # 验证DNS_SLEEP是否为有效数字
+        if ! [[ "$DNS_SLEEP" =~ ^[0-9]+$ ]] || [ "$DNS_SLEEP" -lt 0 ]; then
+            echo "警告: DNS_SLEEP配置无效: $DNS_SLEEP，使用默认值: 300" >> "$LOG_FILE"
+            DNS_SLEEP=300
+        fi
         continue
     fi
 done < "$CONFIG_FILE"
@@ -607,6 +619,7 @@ echo "配置文件: $CONFIG_FILE" >> "$LOG_FILE"
 echo "acme.sh 路径: $ACME_SH_PATH" >> "$LOG_FILE"
 echo "CA提供商: $CA_PROVIDER" >> "$LOG_FILE"
 echo "DNS凭证文件: $DNS_CREDENTIALS_FILE" >> "$LOG_FILE"
+echo "DNS等待时间: ${DNS_SLEEP}秒" >> "$LOG_FILE"
 echo "注意: 每个域名必须明确指定DNS提供商（格式: 域名|DNS提供商）" >> "$LOG_FILE"
 if [ -n "$NGINX_CONF_DIR" ] && [ -d "$NGINX_CONF_DIR" ]; then
     echo "Nginx配置目录: $NGINX_CONF_DIR" >> "$LOG_FILE"
@@ -630,7 +643,7 @@ if ! load_dns_credentials "$DNS_CREDENTIALS_FILE"; then
 fi
 
 # 3. 统计域名总数并检查DNS提供商配置
-TOTAL_DOMAINS=$(grep -v '^[[:space:]]*$' "$CONFIG_FILE" | grep -v '^#' | grep -v '^NGINX_CONF_DIR=' | grep -v '^DNS_PROVIDER=' | grep -v '^CA_PROVIDER=' | grep -v '^DNS_CREDENTIALS_FILE=' | wc -l)
+TOTAL_DOMAINS=$(grep -v '^[[:space:]]*$' "$CONFIG_FILE" | grep -v '^#' | grep -v '^NGINX_CONF_DIR=' | grep -v '^DNS_PROVIDER=' | grep -v '^CA_PROVIDER=' | grep -v '^DNS_CREDENTIALS_FILE=' | grep -v '^DNS_SLEEP=' | wc -l)
 CURRENT_DOMAIN=0
 SUCCESSFUL_DOMAINS=()
 
@@ -648,7 +661,8 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
        [[ "$domain_line" =~ ^NGINX_CONF_DIR= ]] || \
        [[ "$domain_line" =~ ^DNS_PROVIDER= ]] || \
        [[ "$domain_line" =~ ^CA_PROVIDER= ]] || \
-       [[ "$domain_line" =~ ^DNS_CREDENTIALS_FILE= ]]; then
+       [[ "$domain_line" =~ ^DNS_CREDENTIALS_FILE= ]] || \
+       [[ "$domain_line" =~ ^DNS_SLEEP= ]]; then
         continue
     fi
     
@@ -715,7 +729,8 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
        [[ "$domain_line" =~ ^NGINX_CONF_DIR= ]] || \
        [[ "$domain_line" =~ ^DNS_PROVIDER= ]] || \
        [[ "$domain_line" =~ ^CA_PROVIDER= ]] || \
-       [[ "$domain_line" =~ ^DNS_CREDENTIALS_FILE= ]]; then
+       [[ "$domain_line" =~ ^DNS_CREDENTIALS_FILE= ]] || \
+       [[ "$domain_line" =~ ^DNS_SLEEP= ]]; then
         continue
     fi
     
@@ -778,11 +793,12 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     echo "-------------------------------------------------------------" >> "$LOG_FILE"
     
     # 4.1 申请/续签证书
-    # 注意：--dnssleep 300 参数会让程序内部等待300秒
+    # 注意：--dnssleep 参数会让程序内部等待指定秒数，等待DNS记录传播完成
     # 使用域名指定的DNS提供商和原始域名格式申请证书（支持通配符和单域名）
     echo "开始申请/续签证书: $domain ($CERT_TYPE)" >> "$LOG_FILE"
     echo "DNS提供商: $DOMAIN_DNS_PROVIDER" >> "$LOG_FILE"
     echo "CA提供商: $CA_PROVIDER" >> "$LOG_FILE"
+    echo "DNS等待时间: ${DNS_SLEEP}秒" >> "$LOG_FILE"
     
     # 验证DNS提供商格式（应该以 dns_ 开头）
     if [[ ! "$DOMAIN_DNS_PROVIDER" =~ ^dns_ ]]; then
@@ -793,7 +809,7 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     
     if "$ACME_SH_PATH" --issue --dns "$DOMAIN_DNS_PROVIDER" \
         -d "$domain" \
-        --dnssleep 300 >> "$LOG_FILE" 2>&1; then
+        --dnssleep "$DNS_SLEEP" >> "$LOG_FILE" 2>&1; then
         echo "证书申请/续签成功: $domain ($CERT_TYPE)" >> "$LOG_FILE"
     else
         echo "警告: 证书申请/续签失败: $domain，DNS提供商: $DOMAIN_DNS_PROVIDER，跳过安装步骤" >> "$LOG_FILE"

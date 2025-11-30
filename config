@@ -20,6 +20,16 @@ DNS_CREDENTIALS_FILE=dns_credentials
 # 默认值：letsencrypt
 CA_PROVIDER=letsencrypt
 
+# DNS验证等待时间配置（秒）
+# 在DNS验证过程中，acme.sh会等待DNS记录传播完成
+# 不同DNS提供商的DNS记录传播速度不同，可根据实际情况调整
+# 建议值：
+#   - 快速DNS提供商（如Cloudflare）：60-120秒
+#   - 普通DNS提供商（如GoDaddy、阿里云）：180-300秒
+#   - 慢速DNS提供商：300-600秒
+# 默认值：300（5分钟）
+DNS_SLEEP=300
+
 # 域名列表（支持通配符和单域名两种格式，支持多级域名）
 # 
 # ⚠️  强制要求：必须为每个域名明确指定DNS提供商！
