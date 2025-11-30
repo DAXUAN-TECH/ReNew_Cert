@@ -18,10 +18,12 @@ TEMP_FILES=()
 cleanup_temp_files() {
     local file
     for file in "${TEMP_FILES[@]}"; do
-        if [ -f "$file" ]; then
+        if [ -n "$file" ] && [ -f "$file" ]; then
             rm -f "$file" 2>/dev/null || true
         fi
     done
+    # 清空临时文件数组
+    TEMP_FILES=()
 }
 
 # 注册退出时清理临时文件
@@ -284,6 +286,7 @@ load_dns_credentials() {
     
     # 读取凭证文件并导出环境变量
     # 只处理未注释的export语句（默认账号，不带账号标识的）
+    local found_credentials=0
     while IFS= read -r line || [ -n "$line" ]; do
         # 跳过空行和注释行
         line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -299,11 +302,17 @@ load_dns_credentials() {
                 eval "$line" 2>/dev/null || {
                     log_and_echo "警告: 无法加载环境变量: $line"
                 }
+                found_credentials=1
             else
                 log_and_echo "警告: 环境变量格式不正确，跳过: $line"
             fi
         fi
     done < "$cred_file"
+    
+    if [ $found_credentials -eq 0 ]; then
+        log_and_echo "警告: 未找到默认账号的DNS凭证，或凭证文件格式不正确"
+        return 1
+    fi
     
     log_and_echo "DNS凭证文件已加载: $cred_file (默认账号)"
     return 0
@@ -399,7 +408,6 @@ load_dns_credentials_for_account() {
     
     # 读取凭证文件，查找并加载指定账号的凭证
     local found_vars=0
-    local temp_vars=()
     
     while IFS= read -r line || [ -n "$line" ]; do
         # 跳过空行和注释行
@@ -409,7 +417,11 @@ load_dns_credentials_for_account() {
         fi
         
         # 查找包含账号标识的export语句
-        if [[ "$line" =~ ^export[[:space:]]+ ]] && [[ "$line" =~ _account${account_id}= ]]; then
+        # 支持两种格式：
+        # 1. _account${account_id} (如 _accountwp)
+        # 2. _${account_id} (如 _wp)
+        if [[ "$line" =~ ^export[[:space:]]+ ]] && \
+           ([[ "$line" =~ _account${account_id}= ]] || [[ "$line" =~ _${account_id}= ]]); then
             # 提取变量名（去掉export和账号标识后缀）
             local var_with_account=$(echo "$line" | sed 's/^export[[:space:]]*//' | cut -d'=' -f1)
             # 验证变量名格式（只允许字母、数字、下划线）
@@ -418,8 +430,18 @@ load_dns_credentials_for_account() {
                 continue
             fi
             
-            # 提取标准变量名（去掉_account${account_id}后缀）
-            local standard_var=$(echo "$var_with_account" | sed "s/_account${account_id}$//")
+            # 提取标准变量名（去掉账号标识后缀）
+            # 优先尝试 _account${account_id} 格式，如果不存在则尝试 _${account_id} 格式
+            local standard_var=""
+            if [[ "$var_with_account" =~ _account${account_id}$ ]]; then
+                standard_var=$(echo "$var_with_account" | sed "s/_account${account_id}$//")
+            elif [[ "$var_with_account" =~ _${account_id}$ ]]; then
+                standard_var=$(echo "$var_with_account" | sed "s/_${account_id}$//")
+            else
+                log_and_echo "警告: 无法提取标准变量名，跳过: $var_with_account"
+                continue
+            fi
+            
             # 验证标准变量名格式
             if [[ ! "$standard_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
                 log_and_echo "警告: 标准变量名格式不正确，跳过: $standard_var"
@@ -906,7 +928,7 @@ else
         log_and_echo "配置的路径: $NGINX_CONF_DIR"
         log_and_echo "请检查路径是否正确，或修改config文件中的 NGINX_CONF_DIR 配置"
         # 尝试检测常见的nginx配置目录
-        local common_dirs=(
+        common_dirs=(
             "/data/conf.d"
             "/data/openresty/nginx/conf/vhost"
             "/etc/nginx/conf.d"
@@ -1036,6 +1058,13 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
         domain=$(echo "$domain_line" | cut -d'|' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DOMAIN_DNS_PROVIDER=$(echo "$domain_line" | cut -d'|' -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DOMAIN_ACCOUNT_ID=$(echo "$domain_line" | cut -d'|' -f3 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        # 自动去除域名中的 .conf 后缀（兼容用户误输入）
+        if [[ "$domain" =~ \.conf$ ]]; then
+            log_and_echo "提示: 检测到域名包含 .conf 后缀，自动去除: $domain"
+            domain=$(echo "$domain" | sed 's/\.conf$//')
+            log_and_echo "修正后的域名: $domain"
+        fi
     else
         # 不包含 | 分隔符，这是不允许的，应该在前面的检查中已经被捕获
         # 但为了安全，这里再次检查并报错
