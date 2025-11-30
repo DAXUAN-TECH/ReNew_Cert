@@ -168,6 +168,14 @@ export Ali_Secret_account2="account2_secret"
 └── cert/                   # 证书存放目录（自动创建）
     ├── example.com.pem    # 证书文件
     └── example.com.key    # 私钥文件
+
+# Nginx配置目录结构（示例）
+/data/conf.d/               # Nginx配置目录（在config中配置）
+├── example.com.conf        # 配置文件
+├── www.example.com.conf    # 配置文件
+└── backup/                 # 备份目录（自动创建）
+    ├── example.com.conf.backup.20250101_120000
+    └── www.example.com.conf.backup.20250101_120000
 ```
 
 ## 使用方法
@@ -358,9 +366,14 @@ export Ali_Secret_account2="account2_secret"
 
 ### 5. 配置文件更新机制
 
-- **自动备份**：修改配置文件前会自动创建备份文件（格式：`原文件名.backup.时间戳`）
+- **自动备份**：修改配置文件前会自动创建备份文件
+  - 备份文件位置：`${NGINX_CONF_DIR}/backup/原文件名.backup.时间戳`
+  - 备份目录会自动创建（如果不存在）
+  - 备份文件格式：`配置文件名.backup.YYYYMMDD_HHMMSS`
+  - 示例：`/data/conf.d/backup/example.com.conf.backup.20250101_120000`
 - **路径检查**：更新前会检查当前证书路径是否正确，避免重复更新
 - **安全更新**：使用临时文件进行修改，确保原子性操作
+- **备份管理**：如果配置文件未实际修改，备份文件会被自动删除
 
 ### 6. Web 服务器检测与重载
 

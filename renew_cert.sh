@@ -914,10 +914,23 @@ update_nginx_ssl_cert() {
         return 0
     fi
     
-    # 创建备份文件
-    local backup_file="${conf_file}.backup.$(date +%Y%m%d_%H%M%S)"
+    # 创建备份目录（在nginx配置目录下）
+    local backup_dir="${NGINX_CONF_DIR}/backup"
+    if [ ! -d "$backup_dir" ]; then
+        mkdir -p "$backup_dir" || {
+            log_and_echo "错误: 无法创建备份目录: $backup_dir"
+            return 1
+        }
+        log_and_echo "已创建备份目录: $backup_dir"
+    fi
+    
+    # 提取配置文件名（不含路径）
+    local conf_filename=$(basename "$conf_file")
+    
+    # 创建备份文件（放在backup目录下）
+    local backup_file="${backup_dir}/${conf_filename}.backup.$(date +%Y%m%d_%H%M%S)"
     cp "$conf_file" "$backup_file" || {
-        log_and_echo "错误: 无法创建备份文件: $conf_file"
+        log_and_echo "错误: 无法创建备份文件: $backup_file"
         return 1
     }
     
