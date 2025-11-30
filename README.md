@@ -8,12 +8,17 @@
 
 - ✅ **批量处理**：支持一次性处理多个域名的证书申请和续签
 - ✅ **多 DNS 提供商支持**：每个域名可指定不同的 DNS 提供商（GoDaddy、Cloudflare、阿里云、DNSPod 等）
+- ✅ **多账号支持**：支持同一 DNS 提供商的多个账号（如多个阿里云账号、多个 GoDaddy 账号）
 - ✅ **通配符证书支持**：支持通配符证书（`*.example.com`）和单域名证书
-- ✅ **多级域名支持**：支持任意层级的子域名（如 `api.v1.example.com`）
+- ✅ **多级域名支持**：支持任意层级的子域名（如 `api.v1.example.com`、`prod.dev.test.api.v1.example.com`）
+- ✅ **新 TLD 支持**：支持所有新顶级域名（.vip、.tech、.ren、.me 等所有纯字母 TLD）
+- ✅ **下划线域名支持**：支持子域名中包含下划线（如 `example_test.com`、`api_v1.example.com`）
+- ✅ **数字子域名支持**：支持子域名中包含数字（如 `example123.com`、`www123.example.com`）
 - ✅ **自动配置更新**：自动更新 Nginx/OpenResty 配置文件中的 SSL 证书路径
 - ✅ **智能 Web 服务器检测**：自动检测系统安装的是 Nginx 还是 OpenResty
 - ✅ **配置验证**：在执行 reload 前自动测试配置文件，确保配置正确
 - ✅ **安全可靠**：配置文件修改前自动创建备份，支持回滚
+- ✅ **定时任务友好**：交互式输入支持 30 秒超时，默认自动确认，适合定时任务执行
 
 ### 支持的 Web 服务器
 
@@ -24,7 +29,7 @@
 
 ## 系统要求
 
-- **操作系统**：主流 Linux 发行版（CentOS、Ubuntu、Debian 等）
+- **操作系统**：主流 Linux 发行版（CentOS、Ubuntu、Debian 等）和 macOS
 - **Shell**：Bash 4.0+
 - **必需工具**：
   - `curl`：用于下载和安装 acme.sh
@@ -68,11 +73,19 @@ DNS_CREDENTIALS_FILE=dns_credentials
 # CA证书厂商配置
 CA_PROVIDER=letsencrypt
 
-# 域名列表（必须格式：域名|DNS提供商）
+# DNS验证等待时间（秒）
+# 建议值：
+#   - 快速DNS提供商（如Cloudflare）：60-120秒
+#   - 普通DNS提供商（如GoDaddy、阿里云）：180-300秒
+#   - 慢速DNS提供商：300-600秒
+DNS_SLEEP=300
+
+# 域名列表（必须格式：域名|DNS提供商 或 域名|DNS提供商|账号标识）
 *.example.com|dns_gd
 example.com|dns_dp
 www.example.com|dns_ali
 api.v1.example.com|dns_cf
+*.test.com|dns_ali|account1
 ```
 
 **配置说明**：
@@ -83,10 +96,12 @@ api.v1.example.com|dns_cf
   - `letsencrypt`：Let's Encrypt（免费，90 天有效期，推荐）
   - `zerossl`：ZeroSSL（免费，90 天有效期）
   - `buypass`：BuyPass（免费，180 天有效期）
-- **域名列表**：每行一个域名，格式为 `域名|DNS提供商`
+- **DNS_SLEEP**：DNS 验证等待时间（秒），不同 DNS 提供商的传播速度不同，可根据实际情况调整
+- **域名列表**：每行一个域名，格式为 `域名|DNS提供商` 或 `域名|DNS提供商|账号标识`
   - 通配符格式：`*.example.com|dns_gd`
   - 单域名格式：`example.com|dns_dp`
   - 多级域名：`api.v1.example.com|dns_cf`
+  - 多账号格式：`*.test.com|dns_ali|account1`
 
 > ⚠️ **重要**：每个域名必须明确指定 DNS 提供商，格式为 `域名|DNS提供商`。如果未指定，脚本将直接报错退出。
 
@@ -100,17 +115,42 @@ cp dns_credentials.example dns_credentials
 
 2. 编辑 `dns_credentials` 文件，取消注释并填写您使用的 DNS 提供商的 API 密钥：
 
+**默认账号配置**：
+
 ```bash
-# 例如：使用 GoDaddy
+# 例如：使用 GoDaddy（默认账号）
 export GD_Key="your_godaddy_api_key"
 export GD_Secret="your_godaddy_api_secret"
 
-# 例如：使用阿里云
+# 例如：使用阿里云（默认账号）
 export Ali_Key="your_aliyun_access_key_id"
 export Ali_Secret="your_aliyun_access_key_secret"
 ```
 
-详细的 DNS 提供商配置说明请参考 `dns_credentials.example` 文件和 `DNS_CREDENTIALS_README.md`。
+**多账号配置**：
+
+如果您有多个相同 DNS 提供商的账号，可以使用账号标识来区分：
+
+```bash
+# 默认账号（不带账号标识）
+export Ali_Key="default_account_key"
+export Ali_Secret="default_account_secret"
+
+# account1 账号（使用 _account1 后缀）
+export Ali_Key_account1="account1_key"
+export Ali_Secret_account1="account1_secret"
+
+# account2 账号（使用 _account2 后缀）
+export Ali_Key_account2="account2_key"
+export Ali_Secret_account2="account2_secret"
+```
+
+**支持的账号标识格式**：
+
+- 标准格式：`变量名_account标识`（如 `Ali_Key_account1`）
+- 简化格式：`变量名_标识`（如 `Ali_Key_wp`）
+
+详细的 DNS 提供商配置说明请参考 `dns_credentials.example` 文件。
 
 ### 4. 目录结构
 
@@ -142,24 +182,26 @@ export Ali_Secret="your_aliyun_access_key_secret"
 脚本执行时会按以下流程进行：
 
 1. **环境检查**
-   - 检查 acme.sh 是否已安装，如未安装会提示安装
+   - 检查 acme.sh 是否已安装，如未安装会提示安装（30 秒超时，默认自动确认）
    - 检查配置文件是否存在
    - 创建必要的目录（logs、cert）
 
 2. **配置加载**
    - 读取配置文件（config）
-   - 加载 DNS API 凭证
+   - 加载 DNS API 凭证（支持默认账号和多账号）
    - 验证域名配置（检查是否所有域名都指定了 DNS 提供商）
 
 3. **证书申请与安装**
    - 升级 acme.sh 到最新版本
    - 设置 CA 提供商
    - 循环处理每个域名：
+     - 加载对应的 DNS 凭证（默认账号或指定账号）
      - 申请/续签证书
+     - 验证证书是否成功生成
      - 安装证书到指定目录
 
 4. **配置更新**（可选）
-   - 询问用户是否更新 Nginx/OpenResty 配置文件
+   - 询问用户是否更新 Nginx/OpenResty 配置文件（30 秒超时，默认自动确认）
    - 自动查找匹配的配置文件
    - 更新 SSL 证书路径
 
@@ -182,20 +224,33 @@ tail -f logs/renew_cert.log
 
 #### 通配符证书
 
-- 格式：`*.example.com`
-- 说明：申请通配符证书，覆盖所有二级域名
-- 示例：
+- **格式**：`*.example.com`
+- **说明**：申请通配符证书，覆盖所有二级域名
+- **示例**：
   - `*.example.com` → 覆盖 `www.example.com`、`api.example.com` 等
   - `*.v1.example.com` → 覆盖 `api.v1.example.com`、`test.v1.example.com` 等
+  - `*.api.v1.example.com` → 覆盖 `test.api.v1.example.com`、`dev.api.v1.example.com` 等
+  - **支持任意层级**：`*.prod.dev.test.api.v1.example.com`
 
 #### 单域名证书
 
-- 格式：标准域名格式
-- 说明：申请单域名证书，仅覆盖指定域名
-- 示例：
-  - `example.com` → 仅覆盖 `example.com`
-  - `www.example.com` → 仅覆盖 `www.example.com`
-  - `api.v1.example.com` → 仅覆盖 `api.v1.example.com`
+- **格式**：标准域名格式
+- **说明**：申请单域名证书，仅覆盖指定域名
+- **示例**：
+  - **二级域名**：`example.com`、`example123.com`、`example_test.com`、`example.vip`
+  - **三级域名**：`www.example.com`、`www123.example.com`、`api_v1.example.com`、`www.example.tech`
+  - **四级域名**：`api.v1.example.com`、`api123.v1.example.com`、`test_api.v1.example.com`、`api.v1.example.ren`
+  - **五级及以上**：`dev.test.api.v1.example.com`、`prod.dev.test.api.v1.example.com`（支持任意层级）
+
+#### 特殊字符支持
+
+- **数字支持**：子域名部分可以包含数字
+  - 示例：`example123.com`、`www123.example.com`、`api123.v1.example.com`
+- **下划线支持**：子域名部分可以包含下划线
+  - 示例：`example_test.com`、`api_v1.example.com`、`test_api.v1.example.com`
+  - ⚠️ **注意**：下划线在域名中虽然被允许，但可能不被某些 CA（如 Let's Encrypt）支持，建议谨慎使用
+- **新 TLD 支持**：支持所有新顶级域名（纯字母 TLD）
+  - 示例：`.com`、`.org`、`.cn`、`.vip`、`.tech`、`.ren`、`.me` 等所有纯字母 TLD
 
 ### 2. DNS 提供商支持
 
@@ -211,7 +266,49 @@ tail -f logs/renew_cert.log
 
 更多支持的 DNS 提供商请参考：[acme.sh DNS API 文档](https://github.com/acmesh-official/acme.sh/wiki/dnsapi)
 
-### 3. Nginx 配置文件匹配规则
+### 3. 多账号 DNS 提供商支持
+
+如果您有多个相同 DNS 提供商的账号（如多个阿里云账号、多个 GoDaddy 账号），可以使用账号标识来区分：
+
+**配置示例**：
+
+```bash
+# config 文件
+*.example1.com|dns_ali          # 使用默认账号
+*.example2.com|dns_ali|account1  # 使用 account1 账号
+*.example3.com|dns_ali|account2  # 使用 account2 账号
+```
+
+**dns_credentials 文件**：
+
+```bash
+# 默认账号
+export Ali_Key="default_key"
+export Ali_Secret="default_secret"
+
+# account1 账号
+export Ali_Key_account1="account1_key"
+export Ali_Secret_account1="account1_secret"
+
+# account2 账号
+export Ali_Key_account2="account2_key"
+export Ali_Secret_account2="account2_secret"
+```
+
+**账号标识格式**：
+
+- 标准格式：`变量名_account标识`（如 `Ali_Key_account1`）
+- 简化格式：`变量名_标识`（如 `Ali_Key_wp`）
+
+**凭证加载逻辑**：
+
+1. 如果域名未指定账号标识：仅加载默认账号凭证
+2. 如果域名指定了账号标识：
+   - 先尝试加载默认账号凭证
+   - 再尝试加载指定账号凭证
+   - 如果两者都成功，同时使用；如果只有一种成功，使用成功的凭证；如果都失败，脚本退出
+
+### 4. Nginx 配置文件匹配规则
 
 脚本会根据域名自动查找匹配的 Nginx 配置文件：
 
@@ -225,13 +322,13 @@ tail -f logs/renew_cert.log
 - 完全匹配：`api.v1.example.com` → `api.v1.example.com.conf`
 - 后缀匹配：`api.v1.example.com` → `*.api.v1.example.com.conf`
 
-### 4. 配置文件更新机制
+### 5. 配置文件更新机制
 
 - **自动备份**：修改配置文件前会自动创建备份文件（格式：`原文件名.backup.时间戳`）
 - **路径检查**：更新前会检查当前证书路径是否正确，避免重复更新
 - **安全更新**：使用临时文件进行修改，确保原子性操作
 
-### 5. Web 服务器检测与重载
+### 6. Web 服务器检测与重载
 
 #### 检测顺序
 
@@ -245,13 +342,27 @@ tail -f logs/renew_cert.log
 2. **测试通过**：配置测试通过后执行 reload
 3. **测试失败**：配置测试失败时跳过 reload，记录错误日志
 
+### 7. 定时任务支持
+
+脚本支持定时任务执行，交互式输入会自动超时并默认确认：
+
+- **超时时间**：30 秒
+- **默认值**：`y`（自动确认）
+- **行为**：
+  - 如果 30 秒内无输入，自动使用默认值 `y`
+  - 如果直接按回车，也使用默认值 `y`
+  - 适合在 cron 等定时任务中使用
+
 ## 错误处理
 
 脚本包含完善的错误处理机制：
 
 - **配置验证**：启动时验证配置文件格式和必需配置项
+- **域名格式验证**：严格验证域名格式，包括 TLD、下划线、数字等
 - **DNS 提供商验证**：检查 DNS 提供商格式是否正确（必须以 `dns_` 开头）
+- **DNS 凭证验证**：检查 DNS 凭证是否加载成功，失败时退出
 - **证书申请失败**：单个域名申请失败不影响其他域名的处理
+- **证书验证**：申请后验证证书文件是否存在，确保证书真的生成成功
 - **配置更新失败**：配置文件更新失败会记录错误，但不中断脚本执行
 - **Web 服务器检测失败**：检测不到 Web 服务器时会记录警告，但不中断脚本执行
 
@@ -277,11 +388,13 @@ example.com|dns_gd
 1. DNS API 凭证配置错误
 2. DNS 提供商不支持该域名
 3. 网络连接问题
+4. DNS 记录传播时间不足
 
 **解决方法**：
 1. 检查 `dns_credentials` 文件中的 API 密钥是否正确
 2. 确认域名在对应的 DNS 提供商管理
 3. 检查网络连接和防火墙设置
+4. 增加 `DNS_SLEEP` 配置值，给 DNS 记录更多传播时间
 
 ### Q3: 找不到 Nginx 配置文件
 
@@ -303,6 +416,30 @@ example.com|dns_gd
 1. 查看日志文件中的错误信息
 2. 手动执行 `nginx -t` 或 `openresty -t` 检查配置
 3. 确认 Web 服务器正在运行
+
+### Q5: DNS 凭证加载失败
+
+**可能原因**：
+1. `dns_credentials` 文件不存在或路径不正确
+2. 账号标识配置错误
+3. 环境变量格式不正确
+
+**解决方法**：
+1. 确认 `dns_credentials` 文件存在且路径正确
+2. 检查账号标识格式（标准格式：`_account标识` 或简化格式：`_标识`）
+3. 确认环境变量格式为 `export VAR_NAME="value"`
+
+### Q6: 域名格式验证失败
+
+**可能原因**：
+1. 域名包含 `.conf` 后缀（不允许）
+2. 域名包含非法字符
+3. TLD 格式不正确
+
+**解决方法**：
+1. 确保域名不包含 `.conf` 后缀
+2. 检查域名是否包含非法字符（只允许字母、数字、点、连字符、下划线、星号）
+3. 确认 TLD 是纯字母（如 `.com`、`.vip`、`.tech` 等）
 
 ## 安全建议
 
@@ -333,23 +470,44 @@ crontab -e
 0 2 * * 1 /opt/ssl-cert-manager/renew_cert.sh >> /opt/ssl-cert-manager/logs/cron.log 2>&1
 ```
 
+**定时任务说明**：
+
+- 脚本支持非交互式执行，交互式输入会自动超时并默认确认
+- 所有输出会同时记录到日志文件和标准输出
+- 建议定期检查日志文件，确保证书续签正常
+
 ## 技术规范
 
 ### 符合 acme.sh 官方文档要求
 
 本脚本严格按照 [acme.sh 官方文档](https://github.com/acmesh-official/acme.sh/wiki/dnsapi) 的要求实现：
 
-- ✅ 使用 `--issue --dns dns_provider -d domain` 申请证书
+- ✅ 使用 `--issue --dns dns_provider -d domain --dnssleep seconds` 申请证书
 - ✅ 使用 `--install-cert -d domain --key-file ... --fullchain-file ...` 安装证书
 - ✅ DNS 提供商格式验证（必须以 `dns_` 开头）
 - ✅ 环境变量加载方式符合官方要求
+- ✅ 支持所有官方支持的 DNS 提供商
 
 ### 代码质量
 
 - ✅ **逻辑闭环**：所有功能都有完整的错误处理和退出机制
 - ✅ **功能闭环**：从配置读取到证书安装到配置更新的完整流程
-- ✅ **语法正确**：通过 Bash 语法检查
-- ✅ **兼容性**：兼容主流 Linux 发行版
+- ✅ **语法正确**：通过 Bash 语法检查（`bash -n`）
+- ✅ **兼容性**：兼容主流 Linux 发行版和 macOS
+- ✅ **安全性**：临时文件自动清理，防止命令注入，路径验证
+
+### 域名格式验证
+
+脚本实现了严格的域名格式验证，符合 RFC 标准：
+
+- ✅ 支持通配符格式（`*.example.com`）
+- ✅ 支持单域名格式（`example.com`）
+- ✅ 支持多级域名（任意层级）
+- ✅ 支持数字子域名（`example123.com`）
+- ✅ 支持下划线子域名（`example_test.com`）
+- ✅ 支持所有新 TLD（`.vip`、`.tech`、`.ren`、`.me` 等）
+- ✅ 严格验证 TLD 格式（必须是纯字母）
+- ✅ 严格验证域名各部分长度（1-63 个字符）
 
 ## 版本历史
 
@@ -358,6 +516,17 @@ crontab -e
   - 支持多 DNS 提供商
   - 支持 Nginx/OpenResty 配置自动更新
   - 支持通配符和单域名证书
+
+- **v1.1**：功能增强
+  - 支持多账号 DNS 提供商（同一 DNS 提供商的多个账号）
+  - 支持新 TLD（`.vip`、`.tech`、`.ren`、`.me` 等）
+  - 支持下划线域名（`example_test.com`）
+  - 支持数字子域名（`example123.com`）
+  - 支持任意层级的多级域名
+  - 支持定时任务（交互式输入 30 秒超时，默认自动确认）
+  - 可配置 DNS 验证等待时间（`DNS_SLEEP`）
+  - 增强错误处理和证书验证
+  - 改进日志输出（同时输出到控制台和日志文件）
 
 ## 许可证
 
@@ -376,5 +545,4 @@ crontab -e
 
 ---
 
-**最后更新**：2024年
-
+**最后更新**：2024年12月

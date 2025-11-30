@@ -47,6 +47,68 @@ check_acme_installed() {
     return 1
 }
 
+# 函数：带倒计时的交互式输入（30秒超时，默认返回y）
+# 参数：
+#   $1: 提示信息
+#   $2: 超时时间（秒，默认30）
+#   $3: 默认值（默认y）
+# 返回值：
+#   通过全局变量 READ_TIMEOUT_ANSWER 返回用户输入或默认值
+read_with_timeout() {
+    local prompt="$1"
+    local timeout="${2:-30}"
+    local default_value="${3:-y}"
+    
+    # 如果不在交互式环境，直接返回默认值
+    if [ ! -t 0 ]; then
+        READ_TIMEOUT_ANSWER="$default_value"
+        return 0
+    fi
+    
+    local answer=""
+    local countdown=$timeout
+    
+    # 在后台显示倒计时（使用文件描述符3避免干扰stdin/stdout）
+    (
+        while [ $countdown -gt 0 ]; do
+            # 使用 \r 和 \033[K 来在同一行更新倒计时
+            # 输出到stderr，避免干扰stdin
+            printf "\r\033[K%s (默认: %s, 剩余: %d秒): " "$prompt" "$default_value" "$countdown" >&2
+            sleep 1
+            countdown=$((countdown - 1))
+        done
+        # 倒计时结束，显示默认值
+        printf "\r\033[K%s (默认: %s, 已超时，使用默认值)\n" "$prompt" "$default_value" >&2
+    ) &
+    local countdown_pid=$!
+    
+    # 读取用户输入（带超时）
+    # 注意：不使用 -p 参数，因为提示信息已经在倒计时中显示
+    # 从标准输入读取，超时时间由 -t 参数指定
+    if read -t "$timeout" answer 2>/dev/null; then
+        # 用户输入了内容（包括直接按回车），停止倒计时进程
+        kill $countdown_pid 2>/dev/null || true
+        wait $countdown_pid 2>/dev/null || true
+        # 清除倒计时行并换行
+        printf "\r\033[K" >&2
+        # 如果用户输入为空（直接按回车），使用默认值
+        if [ -z "$answer" ]; then
+            READ_TIMEOUT_ANSWER="$default_value"
+            log_and_echo "用户按回车键，使用默认值: $default_value"
+        else
+            READ_TIMEOUT_ANSWER="$answer"
+        fi
+    else
+        # 超时或读取失败，停止倒计时进程
+        kill $countdown_pid 2>/dev/null || true
+        wait $countdown_pid 2>/dev/null || true
+        # 使用默认值
+        READ_TIMEOUT_ANSWER="$default_value"
+    fi
+    
+    return 0
+}
+
 # 函数：安装acme.sh
 install_acme() {
     log_and_echo "开始安装 acme.sh..."
@@ -79,7 +141,8 @@ ask_install_acme() {
         echo "检测到系统未安装 acme.sh" >&2
         echo "acme.sh 是用于自动申请和续签SSL证书的工具" >&2
         echo "" >&2
-        read -p "是否现在安装 acme.sh? (y/n): " answer
+        read_with_timeout "是否现在安装 acme.sh? (y/n)" 30 "y"
+        answer="$READ_TIMEOUT_ANSWER"
         log_and_echo "用户选择: $answer"
         
         case "$answer" in
@@ -112,16 +175,153 @@ validate_wildcard_domain() {
     fi
 }
 
+# 函数：验证域名格式是否正确
+# 支持的格式：
+# 1. 通配符格式：
+#    *.example.com, *.v1.example.com, *.api.v1.example.com
+#    *.test.api.v1.example.com, *.dev.test.api.v1.example.com（支持任意层级）
+# 2. 单域名格式（支持任意层级，支持子域名带数字）：
+#    二级域名：example.com, example123.com
+#    三级域名：www.example.com, www123.example.com, api.v1.example.com
+#    四级域名：api.v1.example.com, test.api.v1.example.com, api123.v1.example.com
+#    五级域名：dev.test.api.v1.example.com, test123.api.v1.example.com
+#    六级域名：prod.dev.test.api.v1.example.com（支持任意层级）
+# 说明：
+#   - 子域名部分（非TLD）可以包含数字，如 example123.com, www123.example.com
+#   - 子域名部分可以包含下划线，如 example_test.com, api_v1.example.com
+#   - TLD（最后一个部分）必须是纯字母，支持所有TLD（包括新TLD）
+#   - 支持的TLD示例：.com, .org, .cn, .vip, .tech, .ren, .me 等所有纯字母TLD
+#   - 支持任意层级的域名（二级、三级、四级、五级、六级等）
+#   - 注意：下划线在域名中虽然被允许，但可能不被某些CA（如Let's Encrypt）支持，建议谨慎使用
+# 返回值：
+#   0: 格式正确
+#   1: 格式错误
+validate_domain_format() {
+    local domain="$1"
+    
+    # 检查域名是否为空
+    if [ -z "$domain" ]; then
+        return 1
+    fi
+    
+    # 检查是否包含 .conf 后缀（不允许）
+    if [[ "$domain" =~ \.conf$ ]]; then
+        return 1
+    fi
+    
+    # 检查是否包含非法字符（只允许字母、数字、点、连字符、下划线、星号）
+    # 注意：下划线虽然被允许，但可能不被某些CA支持，建议谨慎使用
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9._\*-]+$ ]]; then
+        return 1
+    fi
+    
+    # 检查通配符格式
+    if [[ "$domain" =~ ^\*\. ]]; then
+        # 通配符格式（支持任意层级，支持所有TLD）：
+        # *.example.com, *.v1.example.com, *.api.v1.example.com
+        # *.test.api.v1.example.com, *.dev.test.api.v1.example.com（支持任意层级）
+        # *.example.vip, *.example.tech, *.example.ren, *.example.me（支持所有TLD）
+        # 提取主域名部分（去掉 *. 前缀）
+        local main_part=$(echo "$domain" | sed 's/^\*\.//')
+        
+        # 验证主域名部分
+        if [ -z "$main_part" ]; then
+            return 1
+        fi
+        
+        # 主域名不能以点开头或结尾
+        if [[ "$main_part" =~ ^\. ]] || [[ "$main_part" =~ \.$ ]]; then
+            return 1
+        fi
+        
+        # 主域名不能包含连续的点
+        if [[ "$main_part" =~ \.\. ]]; then
+            return 1
+        fi
+        
+        # 主域名必须至少包含一个点（至少是二级域名）
+        if [[ ! "$main_part" =~ \. ]]; then
+            return 1
+        fi
+        
+        # 主域名各部分长度检查（每个部分1-63个字符）
+        local IFS='.'
+        local parts=($main_part)
+        for part in "${parts[@]}"; do
+            if [ ${#part} -eq 0 ] || [ ${#part} -gt 63 ]; then
+                return 1
+            fi
+            # 每个部分不能以连字符开头或结尾
+            if [[ "$part" =~ ^- ]] || [[ "$part" =~ -$ ]]; then
+                return 1
+            fi
+        done
+        
+        return 0
+    else
+        # 单域名格式（支持任意层级，支持子域名带数字和下划线，支持所有TLD）：
+        # example.com, example123.com, example_test.com, example.vip, example.tech
+        # www.example.com, www123.example.com, api_v1.example.com, www.example.ren
+        # api.v1.example.com, api123.v1.example.com, test_api.v1.example.com, api.v1.example.me
+        # dev.test.api.v1.example.com, prod.dev.test.api.v1.example.com（支持任意层级）
+        # 域名不能以点开头或结尾
+        if [[ "$domain" =~ ^\. ]] || [[ "$domain" =~ \.$ ]]; then
+            return 1
+        fi
+        
+        # 域名不能包含连续的点
+        if [[ "$domain" =~ \.\. ]]; then
+            return 1
+        fi
+        
+        # 域名必须至少包含一个点（至少是二级域名）
+        if [[ ! "$domain" =~ \. ]]; then
+            return 1
+        fi
+        
+        # 域名各部分长度检查（每个部分1-63个字符）
+        local IFS='.'
+        local parts=($domain)
+        local parts_count=${#parts[@]}
+        local part_index=0
+        for part in "${parts[@]}"; do
+            if [ ${#part} -eq 0 ] || [ ${#part} -gt 63 ]; then
+                return 1
+            fi
+            # 每个部分不能以连字符开头或结尾
+            if [[ "$part" =~ ^- ]] || [[ "$part" =~ -$ ]]; then
+                return 1
+            fi
+            # 最后一个部分（TLD）必须是纯字母（不能包含数字、下划线、连字符）
+            # 支持所有TLD：.com, .org, .cn, .vip, .tech, .ren, .me 等
+            if [ $part_index -eq $((parts_count - 1)) ]; then
+                if [[ ! "$part" =~ ^[a-zA-Z]+$ ]]; then
+                    return 1
+                fi
+            fi
+            part_index=$((part_index + 1))
+        done
+        
+        return 0
+    fi
+}
+
 # 函数：从域名中提取主域名（用于生成证书文件名）
-# 支持两种格式和多级域名：
+# 支持两种格式和多级域名（支持任意层级，支持子域名带数字和下划线，支持所有TLD）：
 # 1. 通配符格式：
 #    *.example.com -> example.com
 #    *.v1.example.com -> v1.example.com
-# 2. 单域名格式（支持任意层级）：
-#    example.com -> example.com
-#    www.example.com -> www.example.com
-#    api.v1.example.com -> api.v1.example.com
-#    api.v1.test.example.com -> api.v1.test.example.com
+#    *.api.v1.example.com -> api.v1.example.com
+#    *.test.api.v1.example.com -> test.api.v1.example.com（支持任意层级）
+#    *.example.vip -> example.vip, *.example.tech -> example.tech（支持所有TLD）
+# 2. 单域名格式（支持任意层级，支持子域名带数字和下划线，支持所有TLD）：
+#    二级域名：example.com -> example.com, example123.com -> example123.com
+#              example_test.com -> example_test.com, example.vip -> example.vip
+#    三级域名：www.example.com -> www.example.com, www123.example.com -> www123.example.com
+#              api_v1.example.com -> api_v1.example.com, www.example.tech -> www.example.tech
+#    四级域名：api.v1.example.com -> api.v1.example.com, api123.v1.example.com -> api123.v1.example.com
+#              test_api.v1.example.com -> test_api.v1.example.com, api.v1.example.ren -> api.v1.example.ren
+#    五级及以上：dev.test.api.v1.example.com -> dev.test.api.v1.example.com（支持任意层级）
 extract_main_domain() {
     local domain="$1"
     
@@ -149,17 +349,15 @@ log_and_echo() {
     local message="$1"
     # 输出到控制台
     echo "$message"
-    # 同时追加到日志文件
-    echo "$message" >> "$LOG_FILE"
+    # 确保日志目录存在
+    if [ -n "$LOG_DIR" ] && [ ! -d "$LOG_DIR" ]; then
+        mkdir -p "$LOG_DIR" 2>/dev/null || true
+    fi
+    # 同时追加到日志文件（如果目录存在）
+    if [ -n "$LOG_FILE" ] && [ -d "$LOG_DIR" ]; then
+        echo "$message" >> "$LOG_FILE" 2>/dev/null || true
+    fi
 }
-
-# 函数：执行命令并同时输出到控制台和日志文件
-run_with_log() {
-    local cmd="$1"
-    # 使用 tee 同时输出到控制台和日志文件
-    eval "$cmd" 2>&1 | tee -a "$LOG_FILE"
-    return ${PIPESTATUS[0]}
-} 
 
 # 创建必要的目录（logs 和 cert）
 for dir in "$LOG_DIR" "$CERT_DIR"; do
@@ -357,11 +555,9 @@ load_dns_credentials() {
     done < "$cred_file"
     
     if [ $found_credentials -eq 0 ]; then
-        log_and_echo "警告: 未找到默认账号的DNS凭证，或凭证文件格式不正确"
         return 1
     fi
     
-    log_and_echo "DNS凭证文件已加载: $cred_file (默认账号)"
     return 0
 }
 
@@ -518,10 +714,64 @@ load_dns_credentials_for_account() {
     done < "$cred_file"
     
     if [ $found_vars -gt 0 ]; then
-        log_and_echo "已加载账号 $account_id 的DNS凭证（找到 $found_vars 个变量）"
         return 0
     else
-        log_and_echo "警告: 未找到账号 $account_id 的DNS凭证，将使用默认账号"
+        return 1
+    fi
+}
+
+# 函数：为指定域名加载DNS凭证（实现新的逻辑）
+# 参数：
+#   $1: DNS凭证文件路径
+#   $2: DNS提供商（如 dns_ali, dns_gd）
+#   $3: 账号标识（可选，如 account1）
+# 返回值：
+#   0: 成功加载（至少加载了一种凭证）
+#   1: 失败（两种凭证都未找到）
+load_dns_credentials_for_domain() {
+    local cred_file="$1"
+    local dns_provider="$2"
+    local account_id="$3"
+    
+    local default_loaded=0
+    local account_loaded=0
+    
+    # 步骤1: 先尝试加载默认账号凭证（不带账号标识的DNS key）
+    if load_dns_credentials "$cred_file" >/dev/null 2>&1; then
+        default_loaded=1
+    fi
+    
+    # 步骤2: 如果指定了账号标识，再尝试加载指定账号标识的凭证
+    if [ -n "$account_id" ]; then
+        if load_dns_credentials_for_account "$cred_file" "$dns_provider" "$account_id" >/dev/null 2>&1; then
+            account_loaded=1
+        fi
+    fi
+    
+    # 步骤3: 根据结果输出并决定是否继续
+    if [ $default_loaded -eq 1 ] && [ $account_loaded -eq 1 ]; then
+        # 两者都成功
+        log_and_echo "已加载默认账号和账号 $account_id 的DNS凭证，都加载成功"
+        return 0
+    elif [ $default_loaded -eq 1 ]; then
+        # 仅默认成功
+        if [ -n "$account_id" ]; then
+            log_and_echo "已加载默认账号DNS凭证，加载成功（未找到账号 $account_id 的DNS凭证）"
+        else
+            log_and_echo "已加载默认账号DNS凭证，加载成功"
+        fi
+        return 0
+    elif [ $account_loaded -eq 1 ]; then
+        # 仅指定账号成功
+        log_and_echo "已加载账号 $account_id 的DNS凭证，加载成功（未找到默认账号DNS凭证）"
+        return 0
+    else
+        # 两者都失败
+        if [ -n "$account_id" ]; then
+            log_and_echo "错误: DNS凭证加载失败（默认账号和账号 $account_id 都未找到）"
+        else
+            log_and_echo "错误: DNS凭证加载失败（未找到默认账号DNS凭证）"
+        fi
         return 1
     fi
 }
@@ -938,7 +1188,8 @@ ask_update_nginx_config() {
             fi
         done <<< "$conf_files"
         echo ""
-        read -p "是否将证书配置到OpenResty的server配置文件中? (y/n): " answer
+        read_with_timeout "是否将证书配置到OpenResty的server配置文件中? (y/n)" 30 "y"
+        answer="$READ_TIMEOUT_ANSWER"
         log_and_echo "用户输入: $answer"
         
         case "$answer" in
@@ -1005,13 +1256,6 @@ log_and_echo "正在检查更新 acme.sh..."
 # 2. 设置默认 CA（使用配置的CA提供商）
 log_and_echo "设置CA提供商: $CA_PROVIDER"
 "$ACME_SH_PATH" --set-default-ca --server "$CA_PROVIDER" 2>&1 | tee -a "$LOG_FILE"
-
-# 加载DNS API凭证
-log_and_echo "正在加载DNS API凭证..."
-if ! load_dns_credentials "$DNS_CREDENTIALS_FILE"; then
-    log_and_echo "警告: DNS凭证加载失败，证书申请可能会失败"
-    log_and_echo "请确保已正确配置DNS API凭证"
-fi
 
 # 3. 统计域名总数并检查DNS提供商配置
 TOTAL_DOMAINS=$(grep -v '^[[:space:]]*$' "$CONFIG_FILE" | grep -v '^#' | grep -v '^NGINX_CONF_DIR=' | grep -v '^DNS_PROVIDER=' | grep -v '^CA_PROVIDER=' | grep -v '^DNS_CREDENTIALS_FILE=' | grep -v '^DNS_SLEEP=' | wc -l)
@@ -1122,8 +1366,42 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
     
     # 验证域名不为空
     if [ -z "$domain" ]; then
-        log_and_echo "警告: 跳过空域名行: $domain_line"
-        continue
+        log_and_echo "❌ 错误: 域名不能为空: $domain_line"
+        log_and_echo "脚本终止：域名格式错误"
+        exit 1
+    fi
+    
+    # 验证域名格式
+    if ! validate_domain_format "$domain"; then
+        log_and_echo "❌ 错误: 域名格式不正确: $domain"
+        log_and_echo "支持的格式："
+        log_and_echo "  - 通配符格式: *.example.com, *.v1.example.com, *.api.v1.example.com（支持任意层级）"
+        log_and_echo "  - 单域名格式（支持任意层级，支持子域名带数字）："
+        log_and_echo "    * 二级域名: example.com, example123.com"
+        log_and_echo "    * 三级域名: www.example.com, www123.example.com, api.v1.example.com"
+        log_and_echo "    * 四级域名: api.v1.example.com, test.api.v1.example.com, api123.v1.example.com"
+        log_and_echo "    * 五级域名: dev.test.api.v1.example.com, test123.api.v1.example.com"
+        log_and_echo "    * 六级及以上: prod.dev.test.api.v1.example.com（支持任意层级）"
+        log_and_echo "  - 说明:"
+        log_and_echo "    * 子域名部分可以包含数字，如 example123.com, www123.example.com"
+        log_and_echo "    * 子域名部分可以包含下划线，如 example_test.com, api_v1.example.com"
+        log_and_echo "    * TLD（最后一个部分）必须是纯字母，支持所有TLD：.com, .org, .cn, .vip, .tech, .ren, .me 等"
+        log_and_echo "    * 注意：下划线在域名中虽然被允许，但可能不被某些CA（如Let's Encrypt）支持，建议谨慎使用"
+        log_and_echo "错误说明："
+        if [[ "$domain" =~ \.conf$ ]]; then
+            log_and_echo "  - 域名不能包含 .conf 后缀"
+        fi
+        if [[ ! "$domain" =~ ^[a-zA-Z0-9._\*-]+$ ]]; then
+            log_and_echo "  - 域名包含非法字符（只允许字母、数字、点、连字符、下划线、星号）"
+        fi
+        if [[ "$domain" =~ \.\. ]]; then
+            log_and_echo "  - 域名不能包含连续的点"
+        fi
+        if [[ ! "$domain" =~ \. ]]; then
+            log_and_echo "  - 域名必须至少包含一个点（至少是二级域名）"
+        fi
+        log_and_echo "脚本终止：域名格式错误"
+        exit 1
     fi
     
     # 验证DNS提供商不为空（强制要求）
@@ -1179,12 +1457,12 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
         continue
     fi
     
-    # 加载指定账号的DNS凭证（如果指定了账号标识）
-    if [ -n "$DOMAIN_ACCOUNT_ID" ]; then
-        log_and_echo "正在加载账号 $DOMAIN_ACCOUNT_ID 的DNS凭证..."
-        if ! load_dns_credentials_for_account "$DNS_CREDENTIALS_FILE" "$DOMAIN_DNS_PROVIDER" "$DOMAIN_ACCOUNT_ID"; then
-            log_and_echo "警告: 无法加载账号 $DOMAIN_ACCOUNT_ID 的DNS凭证，将使用默认账号"
-        fi
+    # 加载DNS凭证（实现新逻辑：先查找默认账号，再查找指定账号）
+    log_and_echo "正在加载DNS凭证..."
+    if ! load_dns_credentials_for_domain "$DNS_CREDENTIALS_FILE" "$DOMAIN_DNS_PROVIDER" "$DOMAIN_ACCOUNT_ID"; then
+        log_and_echo "跳过域名: $domain"
+        log_and_echo "脚本终止：DNS凭证加载失败"
+        exit 1
     fi
     
     log_and_echo "正在执行证书申请命令..."
