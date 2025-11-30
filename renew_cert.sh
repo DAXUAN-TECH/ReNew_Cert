@@ -295,7 +295,7 @@ load_dns_credentials() {
         fi
         
         # 如果是export语句，且不包含账号标识（不包含 _account 或 _ 后缀的账号标识），执行它
-        # 排除格式：_accountXXX 或 _XXX（其中XXX是账号标识，如 _wp, _vp 等）
+        # 排除格式：_accountXXX 或 _XXX（其中XXX是账号标识，如 _account1, _account2 等）
         if [[ "$line" =~ ^export[[:space:]]+ ]]; then
             # 提取变量名
             local var_name=$(echo "$line" | sed 's/^export[[:space:]]*//' | cut -d'=' -f1)
@@ -306,10 +306,10 @@ load_dns_credentials() {
                 continue
             fi
             
-            # 排除：_XXX 格式（简化格式，如 _wp, _vp, _ex77）
+            # 排除：_XXX 格式（简化格式，如 _account1, _account2）
             # 如果变量名以 _ 加字母数字下划线组合结尾，且不是标准DNS变量名，则可能是账号标识
             # 标准DNS变量名通常以 Key, Secret, Token, Id 等结尾，不应该有额外的下划线后缀
-            # 例如：Ali_Key_wp 应该被排除，但 Ali_Key 应该被包含
+            # 例如：Ali_Key_account1 应该被排除，但 Ali_Key 应该被包含
             # 注意：某些标准变量名本身可能包含下划线（如 AWS_ACCESS_KEY_ID），这些应该被包含
             
             # 检查是否是简化格式的账号标识：变量名以 _字母数字组合结尾
@@ -322,15 +322,15 @@ load_dns_credentials() {
                 if [[ "$var_name" =~ (Key|Secret|Token|Id|Email|Username|Password|Region|API_KEY|SECRET_KEY|ACCESS_KEY|SECRET_ACCESS_KEY)$ ]]; then
                     # 可能是标准变量名，但需要进一步检查
                     # 如果变量名是 Ali_Key, GD_Key 等标准格式，则包含
-                    # 如果变量名是 Ali_Key_wp 等带账号标识的格式，则排除
+                    # 如果变量名是 Ali_Key_account1 等带账号标识的格式，则排除
                     # 我们通过检查变量名是否以已知的标准前缀开头来判断
                     if [[ "$var_name" =~ ^(Ali_|GD_|CF_|DP_|AWS_|Tencent_|HE_|DO_|LINODE_|OVH_|VULTR_|PORKBUN_|ME_|NAMECHEAP_|CLOUDSDK_) ]]; then
                         # 检查是否还有额外的下划线后缀（可能是账号标识）
-                        # 例如：Ali_Key_wp 应该被排除，但 Ali_Key 应该被包含
+                        # 例如：Ali_Key_account1 应该被排除，但 Ali_Key 应该被包含
                         # 标准变量名格式通常是：前缀_后缀（如 Ali_Key），不应该有第三个下划线分隔的部分
                         local underscore_count=$(echo "$var_name" | grep -o '_' | wc -l)
                         if [ $underscore_count -gt 1 ]; then
-                            # 有多个下划线，可能是带账号标识的变量（如 Ali_Key_wp），排除
+                            # 有多个下划线，可能是带账号标识的变量（如 Ali_Key_account1），排除
                             continue
                         fi
                         is_standard_var=1
@@ -465,8 +465,8 @@ load_dns_credentials_for_account() {
         
         # 查找包含账号标识的export语句
         # 支持两种格式：
-        # 1. _account${account_id} (如 _accountwp) - 标准格式
-        # 2. _${account_id} (如 _wp) - 简化格式
+        # 1. _account${account_id} (如 _accountaccount1) - 标准格式
+        # 2. _${account_id} (如 _account1) - 简化格式
         local matched=0
         local standard_var=""
         
