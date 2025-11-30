@@ -45,11 +45,14 @@ TEMP_FILES=()
 # 清理函数：删除所有临时文件
 cleanup_temp_files() {
     local file
-    for file in "${TEMP_FILES[@]}"; do
-        if [ -n "$file" ] && [ -f "$file" ]; then
-            rm -f "$file" 2>/dev/null || true
-        fi
-    done
+    # 检查数组是否为空（兼容 set -u 模式）
+    if [ ${#TEMP_FILES[@]} -gt 0 ]; then
+        for file in "${TEMP_FILES[@]}"; do
+            if [ -n "$file" ] && [ -f "$file" ]; then
+                rm -f "$file" 2>/dev/null || true
+            fi
+        done
+    fi
     # 清空临时文件数组
     TEMP_FILES=()
 }
@@ -1515,7 +1518,17 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
                 DOMAINS_WITH_DNS+=("$domain|$dns_provider")
             fi
             # 记录使用的DNS提供商（去重）
-            if [[ ! " ${DNS_PROVIDERS_USED[@]} " =~ " ${dns_provider} " ]]; then
+            # 检查数组是否为空（兼容 set -u 模式）
+            local provider_exists=0
+            if [ ${#DNS_PROVIDERS_USED[@]} -gt 0 ]; then
+                for existing_provider in "${DNS_PROVIDERS_USED[@]}"; do
+                    if [ "$existing_provider" = "$dns_provider" ]; then
+                        provider_exists=1
+                        break
+                    fi
+                done
+            fi
+            if [ $provider_exists -eq 0 ]; then
                 DNS_PROVIDERS_USED+=("$dns_provider")
             fi
         fi

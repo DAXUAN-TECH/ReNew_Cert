@@ -592,6 +592,13 @@ crontab -e
   - resetconf 模式自动更新所有匹配的配置文件
   - resetconf 模式适合手动更新证书后同步配置的场景
 
+- **v1.3**：修复和优化
+  - 修复 `set -u` 模式下空数组访问错误（`TEMP_FILES[@]` 和 `DNS_PROVIDERS_USED[@]`）
+  - 改进数组访问安全性，兼容严格模式（`set -u`）
+  - 优化备份文件存储位置：备份文件保存在 `${NGINX_CONF_DIR}/backup/` 目录下
+  - 备份文件格式：`配置文件名.backup.YYYYMMDD_HHMMSS`
+  - 备份目录自动创建（如果不存在）
+
 ## 许可证
 
 本脚本遵循 MIT 许可证。
