@@ -294,8 +294,55 @@ load_dns_credentials() {
             continue
         fi
         
-        # 如果是export语句，且不包含账号标识（不包含 _account 后缀），执行它
-        if [[ "$line" =~ ^export[[:space:]]+ ]] && [[ ! "$line" =~ _account[0-9a-zA-Z_]+= ]]; then
+        # 如果是export语句，且不包含账号标识（不包含 _account 或 _ 后缀的账号标识），执行它
+        # 排除格式：_accountXXX 或 _XXX（其中XXX是账号标识，如 _wp, _vp 等）
+        if [[ "$line" =~ ^export[[:space:]]+ ]]; then
+            # 提取变量名
+            local var_name=$(echo "$line" | sed 's/^export[[:space:]]*//' | cut -d'=' -f1)
+            
+            # 检查是否是默认账号变量（不包含账号标识后缀）
+            # 排除：_accountXXX 格式（标准格式）
+            if [[ "$var_name" =~ _account[0-9a-zA-Z_]+$ ]]; then
+                continue
+            fi
+            
+            # 排除：_XXX 格式（简化格式，如 _wp, _vp, _ex77）
+            # 如果变量名以 _ 加字母数字下划线组合结尾，且不是标准DNS变量名，则可能是账号标识
+            # 标准DNS变量名通常以 Key, Secret, Token, Id 等结尾，不应该有额外的下划线后缀
+            # 例如：Ali_Key_wp 应该被排除，但 Ali_Key 应该被包含
+            # 注意：某些标准变量名本身可能包含下划线（如 AWS_ACCESS_KEY_ID），这些应该被包含
+            
+            # 检查是否是简化格式的账号标识：变量名以 _字母数字组合结尾
+            # 但需要排除标准变量名（如 Ali_Key, GD_Key 等）
+            # 如果变量名匹配模式：VAR_XXX（其中XXX是字母数字组合，且不是标准变量名的一部分）
+            if [[ "$var_name" =~ _[a-zA-Z0-9_]+$ ]]; then
+                # 检查是否是标准DNS变量名（这些应该被包含）
+                # 标准变量名通常以 Key, Secret, Token, Id, Email, Username, Password 等结尾
+                local is_standard_var=0
+                if [[ "$var_name" =~ (Key|Secret|Token|Id|Email|Username|Password|Region|API_KEY|SECRET_KEY|ACCESS_KEY|SECRET_ACCESS_KEY)$ ]]; then
+                    # 可能是标准变量名，但需要进一步检查
+                    # 如果变量名是 Ali_Key, GD_Key 等标准格式，则包含
+                    # 如果变量名是 Ali_Key_wp 等带账号标识的格式，则排除
+                    # 我们通过检查变量名是否以已知的标准前缀开头来判断
+                    if [[ "$var_name" =~ ^(Ali_|GD_|CF_|DP_|AWS_|Tencent_|HE_|DO_|LINODE_|OVH_|VULTR_|PORKBUN_|ME_|NAMECHEAP_|CLOUDSDK_) ]]; then
+                        # 检查是否还有额外的下划线后缀（可能是账号标识）
+                        # 例如：Ali_Key_wp 应该被排除，但 Ali_Key 应该被包含
+                        # 标准变量名格式通常是：前缀_后缀（如 Ali_Key），不应该有第三个下划线分隔的部分
+                        local underscore_count=$(echo "$var_name" | grep -o '_' | wc -l)
+                        if [ $underscore_count -gt 1 ]; then
+                            # 有多个下划线，可能是带账号标识的变量（如 Ali_Key_wp），排除
+                            continue
+                        fi
+                        is_standard_var=1
+                    fi
+                fi
+                
+                # 如果不是标准变量名，且以 _字母数字组合结尾，则可能是账号标识，排除
+                if [ $is_standard_var -eq 0 ]; then
+                    continue
+                fi
+            fi
+            
             # 安全地执行export语句
             # 验证格式：export VAR_NAME="value" 或 export VAR_NAME='value' 或 export VAR_NAME=value
             if [[ "$line" =~ ^export[[:space:]]+[A-Za-z_][A-Za-z0-9_]*= ]]; then
@@ -418,33 +465,38 @@ load_dns_credentials_for_account() {
         
         # 查找包含账号标识的export语句
         # 支持两种格式：
-        # 1. _account${account_id} (如 _accountwp)
-        # 2. _${account_id} (如 _wp)
-        if [[ "$line" =~ ^export[[:space:]]+ ]] && \
-           ([[ "$line" =~ _account${account_id}= ]] || [[ "$line" =~ _${account_id}= ]]); then
-            # 提取变量名（去掉export和账号标识后缀）
+        # 1. _account${account_id} (如 _accountwp) - 标准格式
+        # 2. _${account_id} (如 _wp) - 简化格式
+        local matched=0
+        local standard_var=""
+        
+        if [[ "$line" =~ ^export[[:space:]]+ ]]; then
+            # 提取变量名（去掉export）
             local var_with_account=$(echo "$line" | sed 's/^export[[:space:]]*//' | cut -d'=' -f1)
+            
             # 验证变量名格式（只允许字母、数字、下划线）
             if [[ ! "$var_with_account" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-                log_and_echo "警告: 变量名格式不正确，跳过: $var_with_account"
                 continue
             fi
             
-            # 提取标准变量名（去掉账号标识后缀）
-            # 优先尝试 _account${account_id} 格式，如果不存在则尝试 _${account_id} 格式
-            local standard_var=""
+            # 尝试匹配 _account${account_id} 格式
             if [[ "$var_with_account" =~ _account${account_id}$ ]]; then
                 standard_var=$(echo "$var_with_account" | sed "s/_account${account_id}$//")
+                matched=1
+            # 尝试匹配 _${account_id} 格式
             elif [[ "$var_with_account" =~ _${account_id}$ ]]; then
                 standard_var=$(echo "$var_with_account" | sed "s/_${account_id}$//")
-            else
-                log_and_echo "警告: 无法提取标准变量名，跳过: $var_with_account"
-                continue
+                matched=1
             fi
             
-            # 验证标准变量名格式
-            if [[ ! "$standard_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-                log_and_echo "警告: 标准变量名格式不正确，跳过: $standard_var"
+            # 如果匹配成功，验证标准变量名格式
+            if [ $matched -eq 1 ]; then
+                if [[ ! "$standard_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                    log_and_echo "警告: 标准变量名格式不正确，跳过: $standard_var"
+                    continue
+                fi
+            else
+                # 没有匹配到账号标识，跳过
                 continue
             fi
             
@@ -1058,13 +1110,6 @@ while IFS= read -r domain_line || [ -n "$domain_line" ]; do
         domain=$(echo "$domain_line" | cut -d'|' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DOMAIN_DNS_PROVIDER=$(echo "$domain_line" | cut -d'|' -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DOMAIN_ACCOUNT_ID=$(echo "$domain_line" | cut -d'|' -f3 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
-        # 自动去除域名中的 .conf 后缀（兼容用户误输入）
-        if [[ "$domain" =~ \.conf$ ]]; then
-            log_and_echo "提示: 检测到域名包含 .conf 后缀，自动去除: $domain"
-            domain=$(echo "$domain" | sed 's/\.conf$//')
-            log_and_echo "修正后的域名: $domain"
-        fi
     else
         # 不包含 | 分隔符，这是不允许的，应该在前面的检查中已经被捕获
         # 但为了安全，这里再次检查并报错
